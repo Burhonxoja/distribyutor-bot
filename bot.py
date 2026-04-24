@@ -42,7 +42,7 @@ PRODUCTS = [
     ADM_STORE_NAME, ADM_STORE_MANZIL, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(36)
+) = range(37)
 
 # ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
 def get_creds_dict():
