@@ -587,7 +587,7 @@ async def show_daily_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💵 Naqd: {total_cash:,.0f} so'm\n"
                 f"📝 Qarz: {total_debt:,.0f} so'm\n"
                 f"{'─'*25}\n"
-                f"🏪 Do'konlar soni: {len(set(r.get(\"Do'kon\",\"\") for r in today_sales))}"
+               f"🏪 Dokonlar soni: {len(set(r.get('Dokon', '') for r in today_sales))}"
             )
         else:
             msg = (
