@@ -414,44 +414,41 @@ def wait_kb(la):
 
 # ── START / LANG ──────────────────────────────────────────────────────────────
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = upd.effective_user.id
+    ctx.user_data["is_admin"] = uid in ADMIN_IDS
+
+    # Allaqachon ro'yxatdan o'tgan va tasdiqlangan
+    if uid in ADMIN_IDS:
+        la = ctx.user_data.get("lang","uz")
+        await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la, True))
+        return MAIN_MENU
+
+    user = get_user(uid)
+    if user:
+        la = user.get("Til","uz")
+        ctx.user_data["lang"] = la
+        if is_approved(uid):
+            name = user.get("Ism","")
+            await upd.message.reply_text(
+                f"Xush kelibsiz, {name}!" if la=="uz" else f"Добро пожаловать, {name}!",
+                reply_markup=main_kb(la, False))
+            return MAIN_MENU
+        elif is_rejected(uid):
+            await upd.message.reply_text(
+                tx("rejected_msg",la) + "\n\n" + tx("rejected_retry",la),
+                reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+            return REG_NAME
+        else:
+            await upd.message.reply_text(tx("wait_approve",la), reply_markup=wait_kb(la))
+            return WAIT_APPROVE
+
+    # Yangi foydalanuvchi — til tanlash
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("O'zbek", callback_data="lang_uz"),
         InlineKeyboardButton("Русский", callback_data="lang_ru"),
     ]])
     await upd.message.reply_text(tx("start"), reply_markup=kb)
     return LANG_SELECT
-
-async def lang_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query; await q.answer()
-    la = q.data.replace("lang_","")
-    ctx.user_data["lang"] = la
-    uid = upd.effective_user.id
-    ctx.user_data["is_admin"] = uid in ADMIN_IDS
-    await q.edit_message_text("Til tanlandi!" if la=="uz" else "Язык выбран!")
-
-    if uid in ADMIN_IDS:
-        await ctx.bot.send_message(uid, tx("main",la), reply_markup=main_kb(la, True))
-        return MAIN_MENU
-
-    user = get_user(uid)
-    if user:
-        if is_approved(uid):
-            name = user.get("Ism","")
-            await ctx.bot.send_message(uid,
-                f"Xush kelibsiz, {name}!" if la=="uz" else f"Добро пожаловать, {name}!",
-                reply_markup=main_kb(la, False))
-            return MAIN_MENU
-        elif is_rejected(uid):
-            await ctx.bot.send_message(uid,
-                tx("rejected_msg",la) + "\n\n" + tx("rejected_retry",la),
-                reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
-            return REG_NAME
-        else:
-            await ctx.bot.send_message(uid, tx("wait_approve",la), reply_markup=wait_kb(la))
-            return WAIT_APPROVE
-
-    await ctx.bot.send_message(uid, tx("reg_name",la))
-    return REG_NAME
 
 # ── RO'YXATDAN O'TISH ─────────────────────────────────────────────────────────
 async def reg_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
