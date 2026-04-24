@@ -28,7 +28,7 @@ PRODUCTS = [
 
 (
     LANG_SELECT,
-    REGISTER_NAME, REGISTER_PHONE, REGISTER_PASSPORT,
+    REG_NAME, REG_FNAME, REG_PHONE, REG_PASSPORT,
     MAIN_MENU,
     QABUL_PROD, QABUL_QTY,
     TOPSHIR_STORE, TOPSHIR_PROD, TOPSHIR_PHOTO,
@@ -41,58 +41,103 @@ PRODUCTS = [
     ADM_STORE_NAME, ADM_STORE_MANZIL, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(33)
+) = range(34)
 
 # ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
+def get_creds():
+    return json.loads(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else {}
+
 def get_sheet():
     if not GOOGLE_CREDS_JSON: return None
     try:
         creds = Credentials.from_service_account_info(
-            json.loads(GOOGLE_CREDS_JSON),
+            get_creds(),
             scopes=["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
         )
         return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
     except Exception as e:
         logger.error(f"Sheet: {e}"); return None
 
-HEADERS = {
-    "Qabul":            ["Sana","Dist_ID","Ism","Mahsulot","Miqdor","Birlik","Narx","Jami"],
-    "Topshirish":       ["Sana","Dist_ID","Dokon","Mahsulot","Miqdor","Birlik","Narx","Jami"],
-    "Tolov":            ["Sana","Dist_ID","Dokon","Summa","Usul","Izoh"],
+# Har bir varaqning sarlavhalari
+SHEET_HEADERS = {
     "Foydalanuvchilar": ["TG_ID","Ism","Familiya","Telefon","Rol","Til","Passport","Sana"],
     "Dokonlar":         ["ID","Nomi","MCHJ","Tel1","Tel2","Dist_ID","Lat","Lng","Sana"],
     "Narxlar":          ["Mahsulot_ID","Mahsulot","Narx","Tannarx","Sana"],
+    "Qabul":            ["Sana","Dist_ID","Ism","Mahsulot","Miqdor","Birlik","Narx","Jami"],
+    "Topshirish":       ["Sana","Dist_ID","Dokon","Mahsulot","Miqdor","Birlik","Narx","Jami"],
+    "Tolov":            ["Sana","Dist_ID","Dokon","Summa","Usul","Izoh"],
     "Buyurtmalar":      ["Sana","Dist_ID","Dokon","Mahsulot","Miqdor","Status"],
 }
 
-def ws(name):
+def get_ws(name):
     wb = get_sheet()
     if not wb: return None
     try:
-        return wb.worksheet(name)
-    except Exception:
-        w = wb.add_worksheet(name, rows=2000, cols=20)
-        w.append_row(HEADERS.get(name, ["Data"]))
+        w = wb.worksheet(name)
+        # Sarlavha to'g'riligini tekshir
+        existing = w.row_values(1)
+        expected = SHEET_HEADERS.get(name, [])
+        if not existing and expected:
+            w.append_row(expected)
         return w
+    except gspread.exceptions.WorksheetNotFound:
+        w = wb.add_worksheet(name, rows=2000, cols=25)
+        headers = SHEET_HEADERS.get(name, ["Data"])
+        w.append_row(headers)
+        return w
+    except Exception as e:
+        logger.error(f"get_ws {name}: {e}"); return None
 
 def db_append(tab, row):
     try:
-        w = ws(tab)
-        if w: w.append_row(row)
+        w = get_ws(tab)
+        if w: w.append_row([str(x) for x in row])
     except Exception as e:
-        logger.error(f"append {tab}: {e}")
+        logger.error(f"db_append {tab}: {e}")
 
 def db_all(tab):
     try:
-        w = ws(tab)
-        return w.get_all_records() if w else []
+        w = get_ws(tab)
+        if not w: return []
+        return w.get_all_records()
+    except Exception as e:
+        logger.error(f"db_all {tab}: {e}"); return []
+
+def db_update_row(tab, col_name, col_val, update_data: dict):
+    """Bir qatorni yangilash"""
+    try:
+        w = get_ws(tab)
+        if not w: return
+        recs = w.get_all_records()
+        headers = w.row_values(1)
+        for i, r in enumerate(recs):
+            if str(r.get(col_name,"")) == str(col_val):
+                row_num = i + 2
+                for k, v in update_data.items():
+                    if k in headers:
+                        col_idx = headers.index(k) + 1
+                        w.update_cell(row_num, col_idx, str(v))
+                return
+    except Exception as e:
+        logger.error(f"db_update_row {tab}: {e}")
+
+# ── DATABASE FUNKSIYALAR ───────────────────────────────────────────────────────
+def get_user(uid):
+    try:
+        for r in db_all("Foydalanuvchilar"):
+            if str(r.get("TG_ID","")).strip() == str(uid).strip():
+                return r
+        return None
     except Exception:
-        return []
+        return None
+
+def is_registered(uid):
+    return get_user(uid) is not None
 
 def get_price(pid):
     try:
         for r in db_all("Narxlar"):
-            if int(r.get("Mahsulot_ID",0)) == pid:
+            if str(r.get("Mahsulot_ID","")).strip() == str(pid).strip():
                 return float(r.get("Narx",0)), float(r.get("Tannarx",0))
     except Exception:
         pass
@@ -100,198 +145,192 @@ def get_price(pid):
 
 def set_price(pid, pname, price, cost):
     try:
-        w = ws("Narxlar")
+        w = get_ws("Narxlar")
         if not w: return
         recs = w.get_all_records()
         now = now_str()
         for i, r in enumerate(recs):
-            if int(r.get("Mahsulot_ID",0)) == pid:
-                w.update(f"A{i+2}:E{i+2}", [[pid, pname, price, cost, now]]); return
-        w.append_row([pid, pname, price, cost, now])
+            if str(r.get("Mahsulot_ID","")).strip() == str(pid).strip():
+                w.update(f"A{i+2}:E{i+2}", [[str(pid), pname, str(price), str(cost), now]])
+                return
+        w.append_row([str(pid), pname, str(price), str(cost), now])
     except Exception as e:
         logger.error(f"set_price: {e}")
 
 def get_stores(dist_id=None):
-    """Faqat shu distribyutorning do'konlari"""
+    """
+    Faqat shu distribyutorning do'konlarini qaytaradi.
+    dist_id None bo'lsa - hammasi (faqat admin uchun)
+    """
     try:
         recs = db_all("Dokonlar")
-        if dist_id:
-            return [r for r in recs if str(r.get("Dist_ID","")).strip() == str(dist_id).strip()]
-        return recs
-    except Exception:
-        return []
+        if dist_id is None:
+            return recs
+        result = []
+        for r in recs:
+            stored_id = str(r.get("Dist_ID","")).strip()
+            search_id = str(dist_id).strip()
+            if stored_id == search_id:
+                result.append(r)
+        logger.info(f"get_stores({dist_id}): found {len(result)} of {len(recs)}")
+        return result
+    except Exception as e:
+        logger.error(f"get_stores: {e}"); return []
 
-def get_debt(store):
+def get_debt(store_name):
     try:
-        sold = sum(float(r.get("Jami",0)) for r in db_all("Topshirish") if r.get("Dokon")==store)
-        paid = sum(float(r.get("Summa",0)) for r in db_all("Tolov") if r.get("Dokon")==store and r.get("Usul")=="Naqd")
+        sold = sum(float(r.get("Jami",0) or 0)
+                   for r in db_all("Topshirish") if r.get("Dokon","").strip()==store_name.strip())
+        paid = sum(float(r.get("Summa",0) or 0)
+                   for r in db_all("Tolov")
+                   if r.get("Dokon","").strip()==store_name.strip() and r.get("Usul","")=="Naqd")
         return max(0.0, sold - paid)
     except Exception:
         return 0.0
 
-def is_registered(uid):
-    try:
-        for r in db_all("Foydalanuvchilar"):
-            if str(r.get("TG_ID","")) == str(uid):
-                return True
-        return False
-    except Exception:
-        return False
-
-def get_user(uid):
-    try:
-        for r in db_all("Foydalanuvchilar"):
-            if str(r.get("TG_ID","")) == str(uid):
-                return r
-        return None
-    except Exception:
-        return None
-
 def now_str():   return datetime.now().strftime("%Y-%m-%d %H:%M")
 def today_str(): return datetime.now().strftime("%Y-%m-%d")
+
+def fmt_num(text: str) -> float:
+    """10000, 10,000, 10.000, 10.5 — barchasini float ga o'giradi"""
+    try:
+        t = str(text).strip().replace(" ","")
+        # Minglik ajratuvchi: 10,000 yoki 10.000
+        if re.match(r'^\d{1,3}[.,]\d{3}$', t):
+            t = t.replace(",","").replace(".","")
+        else:
+            t = t.replace(",",".")
+        return float(t)
+    except Exception:
+        return 0.0
 
 # ── GOOGLE VISION OCR ─────────────────────────────────────────────────────────
 async def vision_ocr(image_bytes: bytes) -> str:
     try:
+        import httpx
         creds = Credentials.from_service_account_info(
-            json.loads(GOOGLE_CREDS_JSON),
+            get_creds(),
             scopes=["https://www.googleapis.com/auth/cloud-vision"]
         )
         creds.refresh(google.auth.transport.requests.Request())
-        token = creds.token
         b64 = base64.b64encode(image_bytes).decode()
-        import httpx
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 "https://vision.googleapis.com/v1/images:annotate",
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {creds.token}"},
                 json={"requests":[{"image":{"content":b64},"features":[{"type":"TEXT_DETECTION"}]}]}
             )
             data = resp.json()
-            return data["responses"][0].get("fullTextAnnotation",{}).get("text","").strip()
+            text = data["responses"][0].get("fullTextAnnotation",{}).get("text","").strip()
+            logger.info(f"OCR raw: {repr(text)}")
+            return text
     except Exception as e:
-        logger.error(f"Vision OCR: {e}"); return ""
+        logger.error(f"OCR: {e}"); return ""
 
 def parse_scale_weight(text: str) -> float:
     """
-    Tarozi ekranidagi matndan og'irlikni ajratib oladi.
-    Tarozi ekranda 3 ta raqam ko'rsatadi:
-      CHAP = og'irlik (kg)  ← biz shu kerak
-      O'RTA = 1 kg narxi
-      O'NG = umumiy summa
-    
-    Tarozi og'irlikni odatda 3-4 raqam bilan ko'rsatadi:
-    masalan 3455 → 3.455 kg, 1200 → 1.200 kg, 500 → 0.500 kg
+    Tarozi ekrani: CHAP=og'irlik | O'RTA=1kg narxi | O'NG=jami
+    Chap raqam = og'irlik (gramm), masalan 3455 = 3.455 kg
     """
-    if not text:
-        return 0.0
-
-    # Barcha raqam guruhlarini topamiz
-    all_nums = re.findall(r'\d+', text)
-    if not all_nums:
-        return 0.0
-
-    # Birinchi raqam = chap ko'rsatgich = og'irlik
-    first = all_nums[0]
-
-    # Tarozi og'irlikni gramm sifatida ko'rsatadi (3455 = 3.455 kg)
-    # 3-4 raqam bo'lsa → gramm → kg ga o'girish
-    if len(first) >= 3:
-        try:
-            grams = int(first)
-            if grams > 0:
-                return round(grams / 1000, 3)
-        except Exception:
-            pass
-
-    # Agar allaqachon decimal ko'rinishda bo'lsa (3.455)
-    decimal_nums = re.findall(r'\d+[.,]\d+', text)
-    if decimal_nums:
-        try:
-            return float(decimal_nums[0].replace(",", "."))
-        except Exception:
-            pass
-
-    return 0.0
-
-def fmt_price(text: str) -> float:
-    """Narx matnini float ga o'giradi. 10000, 10,000, 10.000 hammasi ishlaydi"""
+    if not text: return 0.0
+    # Barcha raqamlarni top
+    nums = re.findall(r'\d+', text.replace("\n"," "))
+    if not nums: return 0.0
+    # Birinchi raqam = og'irlik (gramm)
+    first = nums[0]
+    logger.info(f"Scale parse: first num = {first}")
     try:
-        # Vergul va nuqtani olib tashlash
-        cleaned = text.strip().replace(" ", "")
-        # Agar nuqta yoki vergul minglik ajratuvchi bo'lsa (3 ta raqam keyin)
-        if re.match(r'^\d{1,3}[.,]\d{3}$', cleaned):
-            cleaned = cleaned.replace(",", "").replace(".", "")
-        else:
-            cleaned = cleaned.replace(",", ".")
-        return float(cleaned)
+        val = int(first)
+        # 3-4 raqam = gramm → kg
+        if 100 <= val <= 99999:
+            return round(val / 1000, 3)
+        # Allaqachon kg (masalan 3.455 yoki 3,455)
     except Exception:
-        return 0.0
+        pass
+    # Decimal izla
+    dec = re.findall(r'\d+[.,]\d+', text)
+    if dec:
+        try:
+            return float(dec[0].replace(",","."))
+        except Exception:
+            pass
+    return 0.0
 
 # ── MATNLAR ───────────────────────────────────────────────────────────────────
 T = {
-    "start":         {"uz":"Tilni tanlang:","ru":"Выберите язык:"},
-    "register_name": {"uz":"Ismingizni kiriting:","ru":"Введите ваше имя:"},
-    "register_fname":{"uz":"Familiyangizni kiriting:","ru":"Введите фамилию:"},
-    "register_phone":{"uz":"Telefon raqamingizni yuboring:","ru":"Отправьте номер телефона:"},
-    "register_pass": {"uz":"Passport rasmini yuboring:","ru":"Отправьте фото паспорта:"},
-    "register_ok":   {"uz":"Royxatdan otdingiz! Xush kelibsiz, {name}!","ru":"Вы зарегистрированы! Добро пожаловать, {name}!"},
-    "wait_approve":  {"uz":"Hisobingiz tekshirilmoqda. Admin tasdiqlashini kuting.","ru":"Аккаунт проверяется. Ожидайте подтверждения администратора."},
-    "main":          {"uz":"Asosiy menyu:","ru":"Главное меню:"},
-    "qabul":         {"uz":"Zavoddan qabul","ru":"Получить с завода"},
-    "buyurtma":      {"uz":"Buyurtmalar","ru":"Заказы"},
-    "topshir":       {"uz":"Mahsulot topshirish","ru":"Передать товар"},
-    "tolov":         {"uz":"Tolov","ru":"Оплата"},
-    "natija":        {"uz":"Kunlik natija","ru":"Итог дня"},
-    "ombor":         {"uz":"Ombor","ru":"Склад"},
-    "marshrut":      {"uz":"Marshrut","ru":"Маршрут"},
-    "hisobot":       {"uz":"Hisobot","ru":"Отчёт"},
-    "my_stores":     {"uz":"Mening dokonlarim","ru":"Мои магазины"},
-    "admin":         {"uz":"Admin panel","ru":"Админ панель"},
-    "back":          {"uz":"Orqaga","ru":"Назад"},
-    "naqd":          {"uz":"Naqd","ru":"Наличные"},
-    "qarz_btn":      {"uz":"Qarz","ru":"Долг"},
-    "prod":          {"uz":"Mahsulotni tanlang:","ru":"Выберите товар:"},
-    "store":         {"uz":"Dokonni tanlang:","ru":"Выберите магазин:"},
-    "no_store":      {"uz":"Dokonlar topilmadi. Qoshish uchun Mening dokonlarim tugmasini bosing.","ru":"Магазины не найдены. Нажмите Мои магазины чтобы добавить."},
-    "sum":           {"uz":"Summa kiriting (masalan: 15000):","ru":"Введите сумму (например: 15000):"},
-    "qty":           {"uz":"Miqdorni kiriting (masalan: 5):","ru":"Введите количество (например: 5):"},
-    "pay":           {"uz":"Tolov usuli:","ru":"Способ оплаты:"},
-    "ok":            {"uz":"Saqlandi!","ru":"Сохранено!"},
-    "err":           {"uz":"Raqam kiriting! Masalan: 5 yoki 5.5","ru":"Введите число! Например: 5 или 5.5"},
-    "no_admin":      {"uz":"Siz admin emassiz!","ru":"Вы не администратор!"},
-    "adm":           {"uz":"Admin paneli:","ru":"Админ панель:"},
-    "price_btn":     {"uz":"Narx ozgartirish","ru":"Изменить цены"},
-    "add_store":     {"uz":"Dokon qoshish (Admin)","ru":"Добавить магазин (Админ)"},
-    "add_dist":      {"uz":"Distribyutor qoshish","ru":"Добавить дистрибьютора"},
-    "stats":         {"uz":"Statistika","ru":"Статистика"},
-    "broadcast":     {"uz":"Hammaga xabar","ru":"Рассылка"},
-    "debtors":       {"uz":"Qarzdorlar","ru":"Должники"},
-    "new_price":     {"uz":"Yangi narx (masalan: 15000):","ru":"Новая цена (например: 15000):"},
-    "tannarx":       {"uz":"Tannarx (masalan: 12000):","ru":"Себестоимость (например: 12000):"},
-    "week":          {"uz":"Haftalik","ru":"Недельный"},
-    "month":         {"uz":"Oylik","ru":"Месячный"},
-    "send_loc":      {"uz":"Lokatsiyangizni yuboring:","ru":"Отправьте геолокацию:"},
-    "loc_btn":       {"uz":"Lokatsiyani yuborish","ru":"Отправить геолокацию"},
-    "skip":          {"uz":"Otkazib yuborish","ru":"Пропустить"},
-    "broadcast_msg": {"uz":"Xabar matnini kiriting:","ru":"Введите текст рассылки:"},
-    "photo_scale":   {"uz":"Tarozi rasmini yuboring YOKI ogirlikni kiriting (masalan: 3.455):","ru":"Фото весов ИЛИ введите вес (например: 3.455):"},
-    "ocr_weight":    {"uz":"Rasmdan oqildi: {v} kg\nTogri bo'lsa HA bosing, yoki to'g'ri raqamni kiriting:","ru":"С фото считано: {v} кг\nЕсли верно нажмите ДА, или введите правильное число:"},
-    "ocr_fail":      {"uz":"Rasmdan oqib bolmadi. Ogirlikni qolda kiriting (masalan: 3.455):","ru":"Не удалось считать. Введите вес вручную (например: 3.455):"},
-    "reading":       {"uz":"Rasm oqilmoqda...","ru":"Читаю изображение..."},
+    # Til
+    "start":        {"uz":"Tilni tanlang:","ru":"Выберите язык:"},
+    # Ro'yxat
+    "reg_name":     {"uz":"Ismingizni kiriting:","ru":"Введите ваше имя:"},
+    "reg_fname":    {"uz":"Familiyangizni kiriting:","ru":"Введите фамилию:"},
+    "reg_phone":    {"uz":"Telefon raqamingizni yuboring:","ru":"Отправьте номер телефона:"},
+    "reg_passport": {"uz":"Passport rasmini yuboring (2 betini birga):","ru":"Отправьте фото паспорта (оба разворота):"},
+    "reg_ok":       {"uz":"Royxatdan otdingiz {name}! Admin tasdiqlashini kuting.","ru":"Вы зарегистрированы {name}! Ожидайте подтверждения."},
+    "reg_new_admin":{"uz":"Yangi distribyutor:\nIsm: {name}\nTel: {phone}\nID: {uid}","ru":"Новый дистрибьютор:\nИмя: {name}\nТел: {phone}\nID: {uid}"},
+    # Menyu
+    "main":         {"uz":"Asosiy menyu:","ru":"Главное меню:"},
+    "qabul":        {"uz":"Zavoddan qabul","ru":"Получить с завода"},
+    "buyurtma":     {"uz":"Buyurtmalar","ru":"Заказы"},
+    "topshir":      {"uz":"Mahsulot topshirish","ru":"Передать товар"},
+    "tolov":        {"uz":"Tolov","ru":"Оплата"},
+    "natija":       {"uz":"Kunlik natija","ru":"Итог дня"},
+    "ombor":        {"uz":"Ombor","ru":"Склад"},
+    "marshrut":     {"uz":"Marshrut","ru":"Маршрут"},
+    "hisobot":      {"uz":"Hisobot","ru":"Отчёт"},
+    "my_stores":    {"uz":"Mening dokonlarim","ru":"Мои магазины"},
+    "admin":        {"uz":"Admin panel","ru":"Админ панель"},
+    "back":         {"uz":"Orqaga","ru":"Назад"},
+    "naqd":         {"uz":"Naqd","ru":"Наличные"},
+    "qarz_btn":     {"uz":"Qarz","ru":"Долг"},
+    # Umumiy
+    "prod":         {"uz":"Mahsulotni tanlang:","ru":"Выберите товар:"},
+    "store":        {"uz":"Dokonni tanlang:","ru":"Выберите магазин:"},
+    "no_store":     {"uz":"Dokonlar topilmadi.\nQoshish: Mening dokonlarim tugmasi","ru":"Магазины не найдены.\nДобавить: кнопка Мои магазины"},
+    "sum":          {"uz":"Summa kiriting (masalan: 15000):","ru":"Введите сумму (например: 15000):"},
+    "qty":          {"uz":"Miqdorni kiriting (masalan: 5 yoki 5.5):","ru":"Введите количество (например: 5 или 5.5):"},
+    "pay":          {"uz":"Tolov usuli:","ru":"Способ оплаты:"},
+    "ok":           {"uz":"Saqlandi!","ru":"Сохранено!"},
+    "err":          {"uz":"Raqam kiriting! Masalan: 5 yoki 5.5 yoki 15000","ru":"Введите число! Например: 5 или 5.5 или 15000"},
+    # Admin
+    "no_admin":     {"uz":"Siz admin emassiz!","ru":"Вы не администратор!"},
+    "adm":          {"uz":"Admin paneli:","ru":"Админ панель:"},
+    "price_btn":    {"uz":"Narx ozgartirish","ru":"Изменить цены"},
+    "add_store_adm":{"uz":"Dokon qoshish","ru":"Добавить магазин"},
+    "add_dist":     {"uz":"Distribyutor qoshish","ru":"Добавить дистрибьютора"},
+    "stats":        {"uz":"Statistika","ru":"Статистика"},
+    "broadcast":    {"uz":"Hammaga xabar","ru":"Рассылка"},
+    "debtors":      {"uz":"Qarzdorlar","ru":"Должники"},
+    "list_stores":  {"uz":"Dokonlar royxati","ru":"Список магазинов"},
+    "list_dists":   {"uz":"Distribyutorlar","ru":"Дистрибьюторы"},
+    "new_price":    {"uz":"Yangi narx (masalan: 15000):","ru":"Новая цена (например: 15000):"},
+    "tannarx":      {"uz":"Tannarx (masalan: 12000):","ru":"Себестоимость (например: 12000):"},
+    # Hisobot
+    "week":         {"uz":"Haftalik","ru":"Недельный"},
+    "month":        {"uz":"Oylik","ru":"Месячный"},
+    # Marshrut
+    "send_loc":     {"uz":"Lokatsiyangizni yuboring:","ru":"Отправьте геолокацию:"},
+    "loc_btn":      {"uz":"Lokatsiyani yuborish","ru":"Отправить геолокацию"},
+    "skip":         {"uz":"Otkazib yuborish","ru":"Пропустить"},
+    # Broadcast
+    "broadcast_msg":{"uz":"Xabar matnini kiriting:","ru":"Введите текст рассылки:"},
+    # OCR
+    "photo_scale":  {"uz":"Tarozi rasmini yuboring YOKI ogirlikni kiriting\n(masalan: 3.455):","ru":"Фото весов ИЛИ введите вес\n(например: 3.455):"},
+    "ocr_weight":   {"uz":"Rasmdan oqildi: {v} kg\nTogri? HA bosing yoki togri raqamni kiriting:","ru":"Считано: {v} кг\nВерно? Нажмите ДА или введите правильное число:"},
+    "ocr_fail":     {"uz":"Rasmdan oqib bolmadi.\nOgirlikni qolda kiriting (masalan: 3.455):","ru":"Не удалось считать.\nВведите вес вручную (например: 3.455):"},
+    "reading":      {"uz":"Rasm oqilmoqda...","ru":"Читаю изображение..."},
     # Do'kon qo'shish (distribyutor)
-    "my_store_name": {"uz":"Dokon nomini kiriting:","ru":"Введите название магазина:"},
-    "my_store_mchj": {"uz":"MCHJ nomini kiriting (yoki Otkazib yuborish):","ru":"Введите название ООО (или Пропустить):"},
-    "my_store_tel1": {"uz":"Dokon telefon raqami 1:","ru":"Телефон магазина 1:"},
-    "my_store_tel2": {"uz":"Telefon raqami 2 (yoki Otkazib yuborish):","ru":"Телефон 2 (или Пропустить):"},
-    "my_store_loc":  {"uz":"Dokon lokatsiyasini yuboring (yoki Otkazib yuborish):","ru":"Отправьте локацию магазина (или Пропустить):"},
-    "store_added":   {"uz":"Dokon qoshildi: {name}","ru":"Магазин добавлен: {name}"},
-    # Admin do'kon qo'shish
-    "adm_store_name":{"uz":"Dokon nomini kiriting:","ru":"Название магазина:"},
-    "adm_store_manz":{"uz":"Manzilni kiriting:","ru":"Введите адрес:"},
-    "adm_store_dist":{"uz":"Distribyutor Telegram ID:","ru":"Telegram ID дистрибьютора:"},
-    "adm_store_loc": {"uz":"Lokatsiyani yuboring (yoki Otkazib yuborish):","ru":"Отправьте локацию (или Пропустить):"},
-    "phone_btn":     {"uz":"Telefon raqamni yuborish","ru":"Отправить номер телефона"},
+    "ms_name":      {"uz":"Dokon nomini kiriting:","ru":"Название магазина:"},
+    "ms_mchj":      {"uz":"MCHJ nomini kiriting\n(yoki Otkazib yuborish):","ru":"Название ООО\n(или Пропустить):"},
+    "ms_tel1":      {"uz":"Dokon telefon raqami 1:","ru":"Телефон магазина 1:"},
+    "ms_tel2":      {"uz":"Telefon raqami 2\n(yoki Otkazib yuborish):","ru":"Телефон 2\n(или Пропустить):"},
+    "ms_loc":       {"uz":"Dokon lokatsiyasini yuboring\n(yoki Otkazib yuborish):","ru":"Локацию магазина\n(или Пропустить):"},
+    "store_added":  {"uz":"Dokon qoshildi: {name}","ru":"Магазин добавлен: {name}"},
+    # Admin do'kon
+    "adm_sname":    {"uz":"Dokon nomi:","ru":"Название магазина:"},
+    "adm_smanzil":  {"uz":"Manzil:","ru":"Адрес:"},
+    "adm_sdist":    {"uz":"Distribyutor Telegram ID si:","ru":"Telegram ID дистрибьютора:"},
+    "adm_sloc":     {"uz":"Lokatsiya yuboring (yoki Otkazib yuborish):","ru":"Локация (или Пропустить):"},
+    "phone_btn":    {"uz":"Telefon raqamni yuborish","ru":"Отправить номер телефона"},
 }
 
 def tx(k, la="uz", **kw):
@@ -300,7 +339,9 @@ def tx(k, la="uz", **kw):
 
 def lg(ctx):     return ctx.user_data.get("lang","uz")
 def is_adm(ctx): return ctx.user_data.get("is_admin", False)
-def uname(upd):  u=upd.effective_user; return u.full_name or u.username or str(u.id)
+def uname(upd):
+    u = upd.effective_user
+    return u.full_name or u.username or str(u.id)
 
 def find_prod(name, la):
     return next((p for p in PRODUCTS if p[la]==name), None)
@@ -326,14 +367,14 @@ def prod_kb(la):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def store_kb(stores, la):
-    rows = [[s.get("Nomi","")] for s in stores]
+    rows = [[s.get("Nomi","")] for s in stores if s.get("Nomi","")]
     rows.append([tx("back",la)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def back_kb(la):
     return ReplyKeyboardMarkup([[tx("back",la)]], resize_keyboard=True)
 
-def skip_back_kb(la):
+def skip_kb(la):
     return ReplyKeyboardMarkup([[tx("skip",la)],[tx("back",la)]], resize_keyboard=True)
 
 def loc_kb(la):
@@ -342,11 +383,10 @@ def loc_kb(la):
 
 def phone_kb(la):
     btn = KeyboardButton(tx("phone_btn",la), request_contact=True)
-    return ReplyKeyboardMarkup([[btn],[tx("back",la)]], resize_keyboard=True)
+    return ReplyKeyboardMarkup([[btn]], resize_keyboard=True)
 
 def yes_kb(la):
-    yes = "HA" if la=="uz" else "ДА"
-    return ReplyKeyboardMarkup([[yes, tx("back",la)]], resize_keyboard=True)
+    return ReplyKeyboardMarkup([["HA" if la=="uz" else "ДА", tx("back",la)]], resize_keyboard=True)
 
 # ── START / LANG ──────────────────────────────────────────────────────────────
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -365,85 +405,81 @@ async def lang_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["is_admin"] = uid in ADMIN_IDS
     await q.edit_message_text("Til tanlandi!" if la=="uz" else "Язык выбран!")
 
-    # Ro'yxatdan o'tganmi?
     if uid in ADMIN_IDS:
         await ctx.bot.send_message(uid, tx("main",la), reply_markup=main_kb(la, True))
         return MAIN_MENU
 
     if is_registered(uid):
         user = get_user(uid)
-        name = user.get("Ism","") if user else ""
-        await ctx.bot.send_message(uid, f"Xush kelibsiz, {name}!" if la=="uz" else f"Добро пожаловать, {name}!",
+        name = f"{user.get('Ism','')} {user.get('Familiya','')}".strip()
+        await ctx.bot.send_message(uid,
+            f"Xush kelibsiz, {name}!" if la=="uz" else f"Добро пожаловать, {name}!",
             reply_markup=main_kb(la, False))
         return MAIN_MENU
 
-    # Yangi foydalanuvchi → ro'yxat
-    await ctx.bot.send_message(uid, tx("register_name",la),
-        reply_markup=ReplyKeyboardMarkup([[tx("back",la)]], resize_keyboard=True))
-    return REGISTER_NAME
+    # Yangi foydalanuvchi
+    await ctx.bot.send_message(uid, tx("reg_name",la), reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
+    return REG_NAME
 
 # ── RO'YXATDAN O'TISH ─────────────────────────────────────────────────────────
 async def reg_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx)
-    ctx.user_data["reg_name"] = upd.message.text
-    await upd.message.reply_text(tx("register_fname",la), reply_markup=back_kb(la))
-    return REGISTER_PHONE
+    ctx.user_data["reg_name"] = upd.message.text.strip()
+    await upd.message.reply_text(tx("reg_fname",la))
+    return REG_FNAME
+
+async def reg_fname(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx)
+    ctx.user_data["reg_fname"] = upd.message.text.strip()
+    await upd.message.reply_text(tx("reg_phone",la), reply_markup=phone_kb(la))
+    return REG_PHONE
 
 async def reg_phone(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx)
-    # Familiyani olish
-    ctx.user_data["reg_fname"] = upd.message.text
-    await upd.message.reply_text(tx("register_phone",la), reply_markup=phone_kb(la))
-    return REGISTER_PASSPORT
+    if upd.message.contact:
+        phone = upd.message.contact.phone_number
+    else:
+        phone = upd.message.text.strip()
+    ctx.user_data["reg_phone"] = phone
+    await upd.message.reply_text(tx("reg_passport",la),
+        reply_markup=ReplyKeyboardMarkup([[tx("skip",la)]], resize_keyboard=True))
+    return REG_PASSPORT
 
 async def reg_passport(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx)
-    # Telefon raqam
-    if upd.message.contact:
-        ctx.user_data["reg_phone"] = upd.message.contact.phone_number
-    else:
-        ctx.user_data["reg_phone"] = upd.message.text
-    await upd.message.reply_text(tx("register_pass",la),
-        reply_markup=ReplyKeyboardMarkup([[tx("skip",la)]], resize_keyboard=True))
-    return MAIN_MENU
-
-async def reg_finish(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx)
     uid = upd.effective_user.id
-    name = ctx.user_data.get("reg_name","")
+    name  = ctx.user_data.get("reg_name","")
     fname = ctx.user_data.get("reg_fname","")
     phone = ctx.user_data.get("reg_phone","")
+    full_name = f"{name} {fname}".strip()
 
-    # Passport rasmi
     passport_info = ""
     if upd.message.photo:
-        passport_info = "rasm_yuborildi"
+        passport_info = "rasm_bor"
     elif upd.message.text == tx("skip",la):
         passport_info = "otkazildi"
     else:
         passport_info = upd.message.text
 
+    # Saqlash
     db_append("Foydalanuvchilar",[
-        str(uid), name, fname, phone,
-        "distributor", la, passport_info, now_str()
+        str(uid), name, fname, phone, "distributor", la, passport_info, now_str()
     ])
 
-    # Adminlarga xabar
+    # Adminlarga xabar + passport rasm
     for admin_id in ADMIN_IDS:
         try:
-            await upd.get_bot().send_message(
-                admin_id,
-                f"Yangi distribyutor:\nIsm: {name} {fname}\nTel: {phone}\nID: {uid}"
-                if la=="uz" else
-                f"Новый дистрибьютор:\nИмя: {name} {fname}\nТел: {phone}\nID: {uid}"
-            )
-        except Exception:
-            pass
+            msg = tx("reg_new_admin", la, name=full_name, phone=phone, uid=str(uid))
+            await ctx.bot.send_message(admin_id, msg)
+            if upd.message.photo:
+                await ctx.bot.send_photo(admin_id, upd.message.photo[-1].file_id,
+                    caption=f"Passport: {full_name} ({uid})")
+        except Exception as e:
+            logger.error(f"Admin notify: {e}")
 
     await upd.message.reply_text(
-        tx("register_ok", la, name=name),
-        reply_markup=main_kb(la, False)
-    )
+        tx("reg_ok", la, name=name),
+        reply_markup=main_kb(la, False))
     return MAIN_MENU
 
 # ── MAIN MENU ─────────────────────────────────────────────────────────────────
@@ -480,7 +516,7 @@ async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if t == tx("natija",la):   await daily(upd, ctx); return MAIN_MENU
     if t == tx("ombor",la):    await stock(upd, ctx); return MAIN_MENU
-    if t == tx("marshrut",la): await marshrut(upd, ctx); return MAIN_MENU
+    if t == tx("marshrut",la): await marshrut_start(upd, ctx); return MAIN_MENU
 
     if t == tx("hisobot",la):
         await upd.message.reply_text(
@@ -490,13 +526,15 @@ async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return HISOBOT_MENU
 
     if t == tx("my_stores",la):
-        await my_stores_menu(upd, ctx); return MY_STORE_NAME
+        await my_stores_show(upd, ctx)
+        return MY_STORE_NAME
 
     if t == tx("admin",la) and is_adm(ctx):
         await upd.message.reply_text(tx("adm",la), reply_markup=ReplyKeyboardMarkup([
-            [tx("price_btn",la), tx("add_store",la)],
-            [tx("add_dist",la),  tx("stats",la)],
-            [tx("debtors",la),   tx("broadcast",la)],
+            [tx("price_btn",la),    tx("add_store_adm",la)],
+            [tx("add_dist",la),     tx("stats",la)],
+            [tx("debtors",la),      tx("broadcast",la)],
+            [tx("list_stores",la),  tx("list_dists",la)],
             [tx("back",la)],
         ], resize_keyboard=True))
         return ADMIN_MENU
@@ -504,31 +542,36 @@ async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la, is_adm(ctx)))
     return MAIN_MENU
 
-# ── MENING DO'KONLARIM (Distribyutor o'zi qo'shadi) ──────────────────────────
-async def my_stores_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx)
-    uid = upd.effective_user.id
+# ── MENING DO'KONLARIM ────────────────────────────────────────────────────────
+async def my_stores_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx); uid = upd.effective_user.id
     stores = get_stores(uid)
-    lines = ["Mening dokonlarim:" if la=="uz" else "Мои магазины:","---"]
-    for s in stores:
-        debt = get_debt(s.get("Nomi",""))
-        d = f" (Qarz: {debt:,.0f})" if debt>0 else ""
-        lines.append(f"• {s.get('Nomi','')}{d}")
-    lines.append("\n" + ("Yangi dokon qoshish uchun nomini kiriting:" if la=="uz" else "Для добавления магазина введите название:"))
+    lines = ["Mening dokonlarim:" if la=="uz" else "Мои магазины:", "---"]
+    if stores:
+        for s in stores:
+            debt = get_debt(s.get("Nomi",""))
+            d = f" | Qarz: {debt:,.0f}" if debt>0 else ""
+            tel = s.get("Tel1","")
+            lines.append(f"• {s.get('Nomi','')}{d}\n  Tel: {tel}")
+    else:
+        lines.append("Hozircha dokon yoq" if la=="uz" else "Магазинов пока нет")
+    lines.append("\n" + ("Yangi dokon qoshish uchun nomini kiriting:" if la=="uz"
+                         else "Для добавления введите название:"))
     await upd.message.reply_text("\n".join(lines), reply_markup=back_kb(la))
 
 async def my_store_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
     if t == tx("back",la):
-        await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la,is_adm(ctx))); return MAIN_MENU
-    ctx.user_data["ns"] = t
-    await upd.message.reply_text(tx("my_store_mchj",la), reply_markup=skip_back_kb(la))
+        await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la,is_adm(ctx)))
+        return MAIN_MENU
+    ctx.user_data["ns"] = t.strip()
+    await upd.message.reply_text(tx("ms_mchj",la), reply_markup=skip_kb(la))
     return MY_STORE_MCHJ
 
 async def my_store_mchj(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
-    ctx.user_data["ns_mchj"] = "" if t==tx("skip",la) else t
-    await upd.message.reply_text(tx("my_store_tel1",la), reply_markup=back_kb(la))
+    ctx.user_data["ns_mchj"] = "" if t==tx("skip",la) else t.strip()
+    await upd.message.reply_text(tx("ms_tel1",la), reply_markup=phone_kb(la))
     return MY_STORE_TEL1
 
 async def my_store_tel1(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -536,35 +579,47 @@ async def my_store_tel1(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.message.contact:
         ctx.user_data["ns_tel1"] = upd.message.contact.phone_number
     else:
-        ctx.user_data["ns_tel1"] = upd.message.text
-    await upd.message.reply_text(tx("my_store_tel2",la), reply_markup=skip_back_kb(la))
+        ctx.user_data["ns_tel1"] = upd.message.text.strip()
+    await upd.message.reply_text(tx("ms_tel2",la), reply_markup=skip_kb(la))
     return MY_STORE_TEL2
 
 async def my_store_tel2(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
-    ctx.user_data["ns_tel2"] = "" if t==tx("skip",la) else t
-    await upd.message.reply_text(tx("my_store_loc",la), reply_markup=loc_kb(la))
+    ctx.user_data["ns_tel2"] = "" if t==tx("skip",la) else t.strip()
+    await upd.message.reply_text(tx("ms_loc",la), reply_markup=loc_kb(la))
     return MY_STORE_LOC
 
 async def my_store_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx)
-    uid = upd.effective_user.id
-    store  = ctx.user_data.get("ns","")
-    mchj   = ctx.user_data.get("ns_mchj","")
-    tel1   = ctx.user_data.get("ns_tel1","")
-    tel2   = ctx.user_data.get("ns_tel2","")
+    la = lg(ctx); uid = upd.effective_user.id
+    store = ctx.user_data.get("ns","")
+    mchj  = ctx.user_data.get("ns_mchj","")
+    tel1  = ctx.user_data.get("ns_tel1","")
+    tel2  = ctx.user_data.get("ns_tel2","")
     lat, lng = "", ""
 
     if upd.message.location:
         lat = str(upd.message.location.latitude)
         lng = str(upd.message.location.longitude)
 
-    cnt = len(db_all("Dokonlar")) + 1
-    # Dist_ID = distribyutorning o'z TG ID si
-    db_append("Dokonlar",[cnt, store, mchj, tel1, tel2, str(uid), lat, lng, now_str()])
+    existing = db_all("Dokonlar")
+    cnt = len(existing) + 1
 
-    await upd.message.reply_text(
-        tx("store_added", la, name=store),
+    # Dist_ID = distribyutorning o'z Telegram ID si
+    row = [str(cnt), store, mchj, tel1, tel2, str(uid), lat, lng, now_str()]
+    db_append("Dokonlar", row)
+    logger.info(f"Store saved: {row}")
+
+    # Adminlarga xabar
+    for admin_id in ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(admin_id,
+                f"Yangi dokon qoshildi:\n{store}\nDist: {uid}\nTel: {tel1}"
+                if la=="uz" else
+                f"Добавлен новый магазин:\n{store}\nДист: {uid}\nТел: {tel1}")
+        except Exception:
+            pass
+
+    await upd.message.reply_text(tx("store_added", la, name=store),
         reply_markup=main_kb(la, is_adm(ctx)))
     return MAIN_MENU
 
@@ -583,11 +638,8 @@ async def qabul_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
     if t == tx("back",la):
         await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return QABUL_PROD
-    try:
-        qty = fmt_price(t)
-        if qty <= 0: raise ValueError
-    except Exception:
-        await upd.message.reply_text(tx("err",la)); return QABUL_QTY
+    qty = fmt_num(t)
+    if qty <= 0: await upd.message.reply_text(tx("err",la)); return QABUL_QTY
     p = ctx.user_data["p"]; uid = upd.effective_user.id
     price, _ = get_price(p["id"])
     total = qty * price
@@ -597,7 +649,7 @@ async def qabul_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=prod_kb(la))
     return QABUL_PROD
 
-# ── TOPSHIRISH (TAROZI OCR) ───────────────────────────────────────────────────
+# ── TOPSHIRISH ────────────────────────────────────────────────────────────────
 async def topshir_store(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
     if t == tx("back",la):
@@ -628,48 +680,33 @@ async def topshir_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx)
     p = ctx.user_data["p"]; store = ctx.user_data["s"]; uid = upd.effective_user.id
 
-    # Rasm yuborilgan
     if upd.message.photo:
         await upd.message.reply_text(tx("reading",la))
-        photo = upd.message.photo[-1]
-        file = await ctx.bot.get_file(photo.file_id)
+        file = await ctx.bot.get_file(upd.message.photo[-1].file_id)
         img_bytes = bytes(await file.download_as_bytearray())
-        raw_text = await vision_ocr(img_bytes)
-        logger.info(f"OCR raw text: {repr(raw_text)}")
-
-        weight = parse_scale_weight(raw_text)
+        raw = await vision_ocr(img_bytes)
+        weight = parse_scale_weight(raw)
         if weight > 0:
-            ctx.user_data["_ocr_weight"] = weight
-            await upd.message.reply_text(
-                tx("ocr_weight", la, v=weight),
-                reply_markup=yes_kb(la))
+            ctx.user_data["_w"] = weight
+            await upd.message.reply_text(tx("ocr_weight",la,v=weight), reply_markup=yes_kb(la))
             return TOPSHIR_PHOTO
-
         await upd.message.reply_text(tx("ocr_fail",la), reply_markup=back_kb(la))
         return TOPSHIR_PHOTO
 
-    # Matn
     t = upd.message.text or ""
     if t == tx("back",la):
         await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return TOPSHIR_PROD
 
-    # OCR tasdiqlash
-    if "_ocr_weight" in ctx.user_data:
+    if "_w" in ctx.user_data:
         if t.upper() in ["HA","ДА","YES","OK"]:
-            qty = ctx.user_data.pop("_ocr_weight")
+            qty = ctx.user_data.pop("_w")
         else:
-            ctx.user_data.pop("_ocr_weight", None)
-            try:
-                qty = fmt_price(t)
-                if qty <= 0: raise ValueError
-            except Exception:
-                await upd.message.reply_text(tx("err",la)); return TOPSHIR_PHOTO
+            ctx.user_data.pop("_w", None)
+            qty = fmt_num(t)
+            if qty <= 0: await upd.message.reply_text(tx("err",la)); return TOPSHIR_PHOTO
     else:
-        try:
-            qty = fmt_price(t)
-            if qty <= 0: raise ValueError
-        except Exception:
-            await upd.message.reply_text(tx("err",la)); return TOPSHIR_PHOTO
+        qty = fmt_num(t)
+        if qty <= 0: await upd.message.reply_text(tx("err",la)); return TOPSHIR_PHOTO
 
     price, _ = get_price(p["id"])
     total = qty * price
@@ -698,11 +735,8 @@ async def tolov_amount(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t == tx("back",la):
         stores = ctx.user_data.get("stores",[])
         await upd.message.reply_text(tx("store",la), reply_markup=store_kb(stores,la)); return TOLOV_STORE
-    try:
-        amount = fmt_price(t)
-        if amount <= 0: raise ValueError
-    except Exception:
-        await upd.message.reply_text(tx("err",la)); return TOLOV_AMOUNT
+    amount = fmt_num(t)
+    if amount <= 0: await upd.message.reply_text(tx("err",la)); return TOLOV_AMOUNT
     ctx.user_data["amount"] = amount
     await upd.message.reply_text(tx("pay",la), reply_markup=ReplyKeyboardMarkup([
         [tx("naqd",la), tx("qarz_btn",la)],[tx("back",la)]], resize_keyboard=True))
@@ -745,11 +779,8 @@ async def buyurtma_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); t = upd.message.text
     if t == tx("back",la):
         await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return BUYURTMA_PROD
-    try:
-        qty = fmt_price(t)
-        if qty <= 0: raise ValueError
-    except Exception:
-        await upd.message.reply_text(tx("err",la)); return BUYURTMA_QTY
+    qty = fmt_num(t)
+    if qty <= 0: await upd.message.reply_text(tx("err",la)); return BUYURTMA_QTY
     p = ctx.user_data["p"]; store = ctx.user_data["s"]; uid = upd.effective_user.id
     db_append("Buyurtmalar",[now_str(), str(uid), store, p[la], qty, "Kutilmoqda"])
     await upd.message.reply_text(
@@ -757,7 +788,7 @@ async def buyurtma_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=prod_kb(la)); return BUYURTMA_PROD
 
 # ── MARSHRUT ──────────────────────────────────────────────────────────────────
-async def marshrut(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def marshrut_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la = lg(ctx); uid = upd.effective_user.id
     stores = get_stores(uid)
     if not stores: await upd.message.reply_text(tx("no_store",la)); return
@@ -771,19 +802,16 @@ async def marshrut_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.message.location:
         lat = upd.message.location.latitude
         lng = upd.message.location.longitude
-
     lines = ["Bugungi marshrut:" if la=="uz" else "Маршрут на сегодня:","---"]
     for i, s in enumerate(stores, 1):
         debt = get_debt(s.get("Nomi",""))
         d = f" (Qarz: {debt:,.0f})" if debt>0 else ""
         lines.append(f"{i}. {s.get('Nomi','')}{d}")
-
     if lat and lng and stores:
         wps = "|".join([s.get("Nomi","").replace(" ","+") for s in stores])
         dest = stores[-1].get("Nomi","").replace(" ","+")
         url = f"https://www.google.com/maps/dir/?api=1&origin={lat},{lng}&destination={dest}&waypoints={wps}&travelmode=driving"
         lines.append(f"\nGoogle Maps:\n{url}")
-
     await upd.message.reply_text("\n".join(lines), reply_markup=main_kb(la, is_adm(ctx)))
 
 # ── HISOBOT ───────────────────────────────────────────────────────────────────
@@ -794,17 +822,17 @@ async def hisobot_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     days = 7 if t==tx("week",la) else 30
     from_dt = (datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
     try:
-        sales=[r for r in db_all("Topshirish") if r.get("Sana","")>=from_dt and str(r.get("Dist_ID",""))==uid]
-        pays =[r for r in db_all("Tolov")      if r.get("Sana","")>=from_dt and str(r.get("Dist_ID",""))==uid]
-        ins  =[r for r in db_all("Qabul")       if r.get("Sana","")>=from_dt and str(r.get("Dist_ID",""))==uid]
-        ts=sum(float(r.get("Jami",0)) for r in sales)
-        tc=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Naqd")
-        td=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Qarz")
-        ti=sum(float(r.get("Jami",0)) for r in ins)
+        sales=[r for r in db_all("Topshirish") if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid]
+        pays =[r for r in db_all("Tolov")      if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid]
+        ins  =[r for r in db_all("Qabul")       if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid]
+        ts=sum(float(r.get("Jami",0) or 0) for r in sales)
+        tc=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Naqd")
+        td=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Qarz")
+        ti=sum(float(r.get("Jami",0) or 0) for r in ins)
         ps={}
-        for r in sales: k=r.get("Mahsulot",""); ps[k]=ps.get(k,0)+float(r.get("Miqdor",0))
+        for r in sales: k=r.get("Mahsulot",""); ps[k]=ps.get(k,0)+float(r.get("Miqdor",0) or 0)
         top=sorted(ps.items(),key=lambda x:x[1],reverse=True)[:3]
-        top_txt="\n".join([f"  {p}: {q:.2f}" for p,q in top]) or "  -"
+        top_txt="\n".join([f"  {p}: {q:.3f}" for p,q in top]) or "  -"
         period=("7 kun" if days==7 else "30 kun") if la=="uz" else ("7 дней" if days==7 else "30 дней")
         if la=="uz":
             msg=(f"Hisobot: {period}\n---\nQabul: {ti:,.0f} som\nSotuv: {ts:,.0f} som\n"
@@ -820,13 +848,13 @@ async def hisobot_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def daily(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=str(upd.effective_user.id); today=today_str()
     try:
-        sales=[r for r in db_all("Topshirish") if r.get("Sana","").startswith(today) and str(r.get("Dist_ID",""))==uid]
-        pays =[r for r in db_all("Tolov")      if r.get("Sana","").startswith(today) and str(r.get("Dist_ID",""))==uid]
-        ins  =[r for r in db_all("Qabul")       if r.get("Sana","").startswith(today) and str(r.get("Dist_ID",""))==uid]
-        ts=sum(float(r.get("Jami",0)) for r in sales)
-        tc=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Naqd")
-        td=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Qarz")
-        ti=sum(float(r.get("Jami",0)) for r in ins)
+        sales=[r for r in db_all("Topshirish") if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid]
+        pays =[r for r in db_all("Tolov")      if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid]
+        ins  =[r for r in db_all("Qabul")       if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid]
+        ts=sum(float(r.get("Jami",0) or 0) for r in sales)
+        tc=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Naqd")
+        td=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Qarz")
+        ti=sum(float(r.get("Jami",0) or 0) for r in ins)
         dc=len(set(r.get("Dokon","") for r in sales))
         if la=="uz":
             msg=f"Kunlik natija - {today}\n---\nQabul: {ti:,.0f} som\nSotuv: {ts:,.0f} som\nNaqd: {tc:,.0f} som\nQarz: {td:,.0f} som\nDokonlar: {dc}"
@@ -841,9 +869,11 @@ async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         st={}
         for r in db_all("Qabul"):
-            if str(r.get("Dist_ID",""))==uid: k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0))
+            if str(r.get("Dist_ID",""))==uid:
+                k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
         for r in db_all("Topshirish"):
-            if str(r.get("Dist_ID",""))==uid: k=r.get("Mahsulot",""); st[k]=st.get(k,0)-float(r.get("Miqdor",0))
+            if str(r.get("Dist_ID",""))==uid:
+                k=r.get("Mahsulot",""); st[k]=st.get(k,0)-float(r.get("Miqdor",0) or 0)
         lines=["Ombor:" if la=="uz" else "Склад:","---"]
         for k,v in st.items():
             if v>0.001: lines.append(f"{k}: {v:.3f}")
@@ -856,14 +886,61 @@ async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
     if uid not in ADMIN_IDS: await upd.message.reply_text(tx("no_admin",la)); return MAIN_MENU
-    if t==tx("back",la):      await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la,True)); return MAIN_MENU
-    if t==tx("price_btn",la): await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return ADM_PRICE_PROD
-    if t==tx("add_store",la): await upd.message.reply_text(tx("adm_store_name",la), reply_markup=back_kb(la)); return ADM_STORE_NAME
-    if t==tx("add_dist",la):  await upd.message.reply_text(tx("adm_dist_name",la) if "adm_dist_name" in T else "Ism:", reply_markup=back_kb(la)); return ADM_DIST_NAME
+    if t==tx("back",la):
+        await upd.message.reply_text(tx("main",la), reply_markup=main_kb(la,True)); return MAIN_MENU
+    if t==tx("price_btn",la):
+        await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return ADM_PRICE_PROD
+    if t==tx("add_store_adm",la):
+        await upd.message.reply_text(tx("adm_sname",la), reply_markup=back_kb(la)); return ADM_STORE_NAME
+    if t==tx("add_dist",la):
+        await upd.message.reply_text("Distribyutor ismi:", reply_markup=back_kb(la)); return ADM_DIST_NAME
     if t==tx("stats",la):     await a_stats(upd,ctx); return ADMIN_MENU
     if t==tx("debtors",la):   await a_debtors(upd,ctx); return ADMIN_MENU
-    if t==tx("broadcast",la): await upd.message.reply_text(tx("broadcast_msg",la), reply_markup=back_kb(la)); return ADM_BROADCAST
+    if t==tx("broadcast",la):
+        await upd.message.reply_text(tx("broadcast_msg",la), reply_markup=back_kb(la)); return ADM_BROADCAST
+    if t==tx("list_stores",la): await a_list_stores(upd,ctx); return ADMIN_MENU
+    if t==tx("list_dists",la):  await a_list_dists(upd,ctx); return ADMIN_MENU
     return ADMIN_MENU
+
+async def a_list_stores(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx)
+    stores = db_all("Dokonlar")
+    if not stores:
+        await upd.message.reply_text("Dokonlar yoq" if la=="uz" else "Магазинов нет"); return
+    lines = [f"Jami dokonlar: {len(stores)}" if la=="uz" else f"Всего магазинов: {len(stores)}", "---"]
+    for s in stores:
+        debt = get_debt(s.get("Nomi",""))
+        d = f" | Qarz: {debt:,.0f}" if debt>0 else ""
+        lines.append(
+            f"• {s.get('Nomi','')}\n"
+            f"  MCHJ: {s.get('MCHJ','') or '-'}\n"
+            f"  Tel: {s.get('Tel1','')}\n"
+            f"  Dist ID: {s.get('Dist_ID','')}{d}"
+        )
+    # Uzoq bo'lsa bo'laklarga bo'lib yuboramiz
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3000):
+        await upd.message.reply_text(text[i:i+3000])
+
+async def a_list_dists(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx)
+    users = db_all("Foydalanuvchilar")
+    dists = [u for u in users if u.get("Rol","") == "distributor"]
+    if not dists:
+        await upd.message.reply_text("Distribyutorlar yoq" if la=="uz" else "Дистрибьюторов нет"); return
+    lines = [f"Jami: {len(dists)}" if la=="uz" else f"Всего: {len(dists)}", "---"]
+    for u in dists:
+        name = f"{u.get('Ism','')} {u.get('Familiya','')}".strip()
+        stores = get_stores(u.get("TG_ID",""))
+        lines.append(
+            f"• {name}\n"
+            f"  Tel: {u.get('Telefon','')}\n"
+            f"  ID: {u.get('TG_ID','')}\n"
+            f"  Dokonlar: {len(stores)}"
+        )
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3000):
+        await upd.message.reply_text(text[i:i+3000])
 
 async def a_price_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text
@@ -877,15 +954,15 @@ async def a_price_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def a_price_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text
     if t==tx("back",la): await upd.message.reply_text(tx("prod",la), reply_markup=prod_kb(la)); return ADM_PRICE_PROD
-    try: price=fmt_price(t);
-    except Exception: await upd.message.reply_text(tx("err",la)); return ADM_PRICE_VAL
+    price=fmt_num(t)
+    if price<=0: await upd.message.reply_text(tx("err",la)); return ADM_PRICE_VAL
     ctx.user_data["np"]=price
     await upd.message.reply_text(tx("tannarx",la)); return ADM_COST_VAL
 
 async def a_cost_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text
-    try: cost=fmt_price(t)
-    except Exception: await upd.message.reply_text(tx("err",la)); return ADM_COST_VAL
+    cost=fmt_num(t)
+    if cost<0: await upd.message.reply_text(tx("err",la)); return ADM_COST_VAL
     p=ctx.user_data["p"]; price=ctx.user_data["np"]
     set_price(p["id"],p[la],price,cost)
     await upd.message.reply_text(f"Yangilandi!\n{p[la]}: {price:,.0f} / {cost:,.0f}", reply_markup=main_kb(la,True))
@@ -894,18 +971,18 @@ async def a_cost_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def a_store_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text
     if t==tx("back",la): return ADMIN_MENU
-    ctx.user_data["ns"]=t
-    await upd.message.reply_text(tx("adm_store_manz",la), reply_markup=back_kb(la)); return ADM_STORE_MANZIL
+    ctx.user_data["ns"]=t.strip()
+    await upd.message.reply_text(tx("adm_smanzil",la), reply_markup=back_kb(la)); return ADM_STORE_MANZIL
 
 async def a_store_manzil(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
-    ctx.user_data["ns_manzil"]=upd.message.text
-    await upd.message.reply_text(tx("adm_store_dist",la)); return ADM_STORE_DIST
+    ctx.user_data["ns_manzil"]=upd.message.text.strip()
+    await upd.message.reply_text(tx("adm_sdist",la)); return ADM_STORE_DIST
 
 async def a_store_dist(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
-    ctx.user_data["ns_dist"]=upd.message.text
-    await upd.message.reply_text(tx("adm_store_loc",la), reply_markup=loc_kb(la)); return ADM_STORE_LOC
+    ctx.user_data["ns_dist"]=upd.message.text.strip()
+    await upd.message.reply_text(tx("adm_sloc",la), reply_markup=loc_kb(la)); return ADM_STORE_LOC
 
 async def a_store_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
@@ -913,33 +990,35 @@ async def a_store_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lat,lng="",""
     if upd.message.location: lat=str(upd.message.location.latitude); lng=str(upd.message.location.longitude)
     cnt=len(db_all("Dokonlar"))+1
-    db_append("Dokonlar",[cnt, store, manzil, "", "", str(dist_id), lat, lng, now_str()])
-    await upd.message.reply_text(f"Dokon qoshildi: {store}" if la=="uz" else f"Магазин добавлен: {store}", reply_markup=main_kb(la,True))
+    db_append("Dokonlar",[str(cnt), store, manzil, "", "", str(dist_id), lat, lng, now_str()])
+    await upd.message.reply_text(
+        f"Dokon qoshildi: {store}" if la=="uz" else f"Магазин добавлен: {store}",
+        reply_markup=main_kb(la,True))
     return MAIN_MENU
 
 async def a_dist_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text
     if t==tx("back",la): return ADMIN_MENU
-    ctx.user_data["nd"]=t
+    ctx.user_data["nd"]=t.strip()
     await upd.message.reply_text("Telegram ID:", reply_markup=back_kb(la)); return ADM_DIST_ID
 
 async def a_dist_id(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); name=ctx.user_data.get("nd","")
-    db_append("Foydalanuvchilar",[upd.message.text, name, "", "", "distributor", la, "", now_str()])
+    db_append("Foydalanuvchilar",[upd.message.text.strip(), name, "", "", "distributor", la, "", now_str()])
     await upd.message.reply_text(f"Qoshildi: {name}", reply_markup=main_kb(la,True)); return MAIN_MENU
 
 async def a_stats(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
     try:
         sales=db_all("Topshirish"); pays=db_all("Tolov"); ins=db_all("Qabul"); stores=db_all("Dokonlar")
-        ts=sum(float(r.get("Jami",0)) for r in sales)
-        tc=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Naqd")
-        td=sum(float(r.get("Summa",0)) for r in pays if r.get("Usul")=="Qarz")
-        ti=sum(float(r.get("Jami",0)) for r in ins)
+        ts=sum(float(r.get("Jami",0) or 0) for r in sales)
+        tc=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Naqd")
+        td=sum(float(r.get("Summa",0) or 0) for r in pays if r.get("Usul")=="Qarz")
+        ti=sum(float(r.get("Jami",0) or 0) for r in ins)
         ps={}
-        for r in sales: k=r.get("Mahsulot",""); ps[k]=ps.get(k,0)+float(r.get("Miqdor",0))
+        for r in sales: k=r.get("Mahsulot",""); ps[k]=ps.get(k,0)+float(r.get("Miqdor",0) or 0)
         top=sorted(ps.items(),key=lambda x:x[1],reverse=True)[:3]
-        top_txt="\n".join([f"  {p}: {q:.2f}" for p,q in top]) or "  -"
+        top_txt="\n".join([f"  {p}: {q:.3f}" for p,q in top]) or "  -"
         if la=="uz":
             msg=(f"Umumiy statistika\n---\nQabul: {ti:,.0f}\nSotuv: {ts:,.0f}\n"
                  f"Naqd: {tc:,.0f}\nQarz: {td:,.0f}\nDokonlar: {len(stores)}\n---\nTop:\n{top_txt}")
@@ -980,10 +1059,11 @@ async def debt_reminder(ctx: ContextTypes.DEFAULT_TYPE):
         for s in stores:
             debt=get_debt(s.get("Nomi",""))
             if debt>0:
-                did=str(s.get("Dist_ID",""))
+                did=str(s.get("Dist_ID","")).strip()
                 if did not in dist_debts: dist_debts[did]=[]
                 dist_debts[did].append((s.get("Nomi",""),debt))
         for did,debts in dist_debts.items():
+            if not did or did=="0": continue
             try:
                 lines=["Bugungi qarzlar:","---"]
                 for name,debt in debts: lines.append(f"{name}: {debt:,.0f} som")
@@ -1012,9 +1092,10 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             LANG_SELECT:      [CallbackQueryHandler(lang_cb, pattern="^lang_"), CommandHandler("start",start)],
-            REGISTER_NAME:    [MessageHandler(txt, reg_name)],
-            REGISTER_PHONE:   [MessageHandler(txt, reg_phone)],
-            REGISTER_PASSPORT:[MessageHandler((filters.PHOTO|filters.TEXT|filters.CONTACT)&~filters.COMMAND, reg_finish)],
+            REG_NAME:         [MessageHandler(txt, reg_name)],
+            REG_FNAME:        [MessageHandler(txt, reg_fname)],
+            REG_PHONE:        [MessageHandler(cont_txt, reg_phone)],
+            REG_PASSPORT:     [MessageHandler((filters.PHOTO|filters.TEXT)&~filters.COMMAND, reg_passport)],
             MAIN_MENU:        [MessageHandler(txt, main_h)],
             QABUL_PROD:       [MessageHandler(txt, qabul_prod)],
             QABUL_QTY:        [MessageHandler(txt, qabul_qty)],
