@@ -572,11 +572,10 @@ async def approve_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user(target_uid)
         la = user.get("Til","uz") if user else "uz"
-        # Foydalanuvchiga menyu bilan xabar yuborish
         await ctx.bot.send_message(
             int(target_uid),
-            tx("approved_msg", la),
-            reply_markup=main_kb(la, False))
+            tx("approved_msg", la) + "\n\n" + ("Boshlash uchun /start bosing" if la=="uz" else "Нажмите /start для начала"),
+            reply_markup=ReplyKeyboardMarkup([["/start"]], resize_keyboard=True))
     except Exception as e:
         logger.error(f"approve notify: {e}")
 
