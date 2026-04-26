@@ -57,7 +57,7 @@ def get_products():
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_DOKON_EGA_NAME, ADM_DOKON_EGA_ID,
     ADM_BROADCAST,
-) = range(50)
+) = range(53)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 def get_creds_dict():
