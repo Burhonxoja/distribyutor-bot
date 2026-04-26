@@ -55,7 +55,7 @@ def get_products():
     ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(44)
+) = range(45)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 def get_creds_dict():
