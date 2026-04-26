@@ -55,7 +55,7 @@ def get_products():
     ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(45)
+) = range(44)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 def get_creds_dict():
@@ -774,18 +774,32 @@ async def di_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def di_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=upd.effective_user.id
     lat,lng="",""
-    if upd.message.location: lat=str(upd.message.location.latitude); lng=str(upd.message.location.longitude)
+    # Lokatsiya yuborilgan bo'lsa
+    if upd.message.location:
+        lat=str(upd.message.location.latitude)
+        lng=str(upd.message.location.longitude)
+    # Matn kelgan bo'lsa (Otkazib yuborish yoki Orqaga)
+    elif upd.message.text:
+        t = upd.message.text
+        if t == tx("back",la):
+            await upd.message.reply_text(tx("dokon_photo_q",la),reply_markup=skip_kb(la)); return DI_PHOTO
+        # Otkazib yuborish — lokatsiyasiz saqlash
     name=ctx.user_data.get("di_name",""); addr=ctx.user_data.get("di_addr","")
     mchj=ctx.user_data.get("di_mchj",""); tel1=ctx.user_data.get("di_tel1","")
     tel2=ctx.user_data.get("di_tel2",""); photo=ctx.user_data.get("di_photo","")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     cnt=len(db_all("Dokonlar"))+1
-    sid=""
-    db_append("Dokonlar",[str(cnt),sid,name,addr,mchj,tel1,tel2,str(uid),dn,lat,lng,now_str()])
-    if photo:
-        for admin_id in ADMIN_IDS:
-            try: await ctx.bot.send_photo(admin_id,photo,caption=f"Yangi do'kon: {name} | Dist: {dn}")
-            except Exception: pass
+    db_append("Dokonlar",[str(cnt),"",name,addr,mchj,tel1,tel2,str(uid),dn,lat,lng,now_str()])
+    logger.info(f"Do'kon saqlandi: {name} | lat={lat} lng={lng} | dist={uid}")
+    for admin_id in ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(admin_id,
+                f"🏪 YANGI DO'KON:\n{name}\nAdres: {addr}\nTel: {tel1}\nDist: {dn} ({uid})")
+            if lat and lng:
+                await ctx.bot.send_location(admin_id, float(lat), float(lng))
+            if photo:
+                await ctx.bot.send_photo(admin_id, photo, caption=f"Do'kon: {name}")
+        except Exception as e: logger.error(f"do'kon admin notify: {e}")
     await upd.message.reply_text(tx("dokon_saved",la,name=name))
     sid2=get_short_id(uid)
     await upd.message.reply_text(tx("main",la,sid=sid2),reply_markup=main_kb(la,sid2,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
@@ -1296,6 +1310,7 @@ async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"tovar_24h_reminder: {e}")
 
 
+async def debt_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     """Har kuni 09:00 qarz eslatmasi"""
     try:
         for u in db_all("Foydalanuvchilar"):
@@ -1358,7 +1373,7 @@ def main():
             DI_TEL1:            [MessageHandler(cont_txt,di_tel1)],
             DI_TEL2:            [MessageHandler(cont_txt,di_tel2)],
             DI_PHOTO:           [MessageHandler(photo_txt,di_photo)],
-            DI_LOC:             [MessageHandler(loc_txt,di_loc)],
+            DI_LOC:             [MessageHandler(loc_txt, di_loc), MessageHandler(txt, di_loc)],
             NARX_PROD:          [MessageHandler(txt,narx_prod)],
             NARX_TYPE:          [MessageHandler(txt,narx_type)],
             NARX_VAL:           [MessageHandler(txt,narx_val)],
