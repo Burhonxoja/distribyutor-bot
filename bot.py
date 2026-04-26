@@ -55,7 +55,7 @@ def get_products():
     ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(45)
+) = range(44)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 def get_creds_dict():
@@ -731,8 +731,14 @@ async def zakaz_comment(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── DO'KON QO'SHISH (distribyutor tomonidan) ─────────────────────────────────
 async def di_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""
-    if t==tx("back",la): return MAIN_MENU
+    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
+    if t==tx("back",la) or t in ["Orqaga","Назад"]:
+        sid=get_short_id(uid)
+        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
+    # "Yangi do'kon qo'shish" tugmasi bosilsa — do'kon nomini so'rash
+    if "yangi" in t.lower() or "добавить" in t.lower() or ctx.user_data.get("waiting_store_add"):
+        ctx.user_data.pop("waiting_store_add",None)
+        await upd.message.reply_text(tx("dokon_name",la),reply_markup=back_kb(la)); return DI_NAME
     ctx.user_data["di_name"]=t.strip()
     await upd.message.reply_text(tx("dokon_addr",la),reply_markup=back_kb(la)); return DI_ADDR
 
@@ -873,7 +879,8 @@ async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("natija",la):        await daily(upd,ctx); return MAIN_MENU
     if t==tx("ombor",la):         await stock(upd,ctx); return MAIN_MENU
     if t==tx("marshrut",la):      await marshrut_start(upd,ctx); return MAIN_MENU
-    if t==tx("my_stores",la):     await _show_my_stores(upd,ctx); return MAIN_MENU
+    if t==tx("my_stores",la):
+        await _show_my_stores(upd,ctx); return DI_NAME
     if t==tx("hisobot",la):
         await upd.message.reply_text("Hisobot:",
             reply_markup=ReplyKeyboardMarkup([[tx("week",la),tx("month",la)],[tx("back",la)]],resize_keyboard=True))
@@ -910,8 +917,12 @@ async def _show_my_stores(upd,ctx):
         debt=get_debt(str(s.get("ID",""))); d=f" | Qarz: {debt:,.0f}" if debt>0 else ""
         lat=s.get("Lat",""); lng=s.get("Lng",""); loc=f"\n  📍 {lat},{lng}" if lat and lng else ""
         lines.append(f"• {s.get('Nomi','')}{d}\n  📞 {s.get('Tel1','')}{loc}")
-    if len(lines)==2: lines.append("Do'konlar yo'q")
-    await upd.message.reply_text("\n".join(lines))
+    if len(lines)==2: lines.append("Do'konlar yo'q" if la=="uz" else "Магазинов нет")
+    add_btn = "➕ Yangi do'kon qo'shish" if la=="uz" else "➕ Добавить новый магазин"
+    lines.append(f"\n{add_btn}:")
+    await upd.message.reply_text("\n".join(lines),
+        reply_markup=ReplyKeyboardMarkup([[add_btn],[tx("back",la)]], resize_keyboard=True))
+    ctx.user_data["waiting_store_add"] = True
 
 # ── HISOBOT ───────────────────────────────────────────────────────────────────
 async def hisobot_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1233,7 +1244,58 @@ async def auto_zakaz_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"auto_zakaz_reminder: {e}")
 
-async def debt_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Har soatda tekshiradi: 24 soat oldin topshirilgan tovarlar haqida
+    distribyutorga eslatma yuboradi
+    """
+    try:
+        now = datetime.now()
+        tops = db_all("Topshirish")
+        for r in tops:
+            if r.get("Status","") != "tasdiqlangan": continue
+            try:
+                top_time = datetime.strptime(r.get("Sana",""), "%Y-%m-%d %H:%M")
+            except Exception: continue
+            hours = (now - top_time).total_seconds() / 3600
+            # 24 soat o'tgan (±30 daqiqa tolerans)
+            if not (23.5 <= hours <= 24.5): continue
+            dist_id = str(r.get("Dist_ID",""))
+            if not dist_id or dist_id == "0": continue
+            try:
+                du = get_user(dist_id)
+                if not du: continue
+                la = du.get("Til","uz")
+                dokon = r.get("Dokon","")
+                prod = r.get("Mahsulot","")
+                qty = r.get("Miqdor","")
+                unit = r.get("Birlik","")
+                # Do'kon telefon raqami
+                dokon_id = str(r.get("Dokon_ID",""))
+                dokon_info = next((s for s in db_all("Dokonlar") if str(s.get("ID",""))==dokon_id), None)
+                tel = dokon_info.get("Tel1","") if dokon_info else ""
+                tel2 = dokon_info.get("Tel2","") if dokon_info else ""
+                tel_str = f"📞 {tel}" if tel else ""
+                if tel2: tel_str += f" / {tel2}"
+                if la == "uz":
+                    msg = (f"📋 24 SOAT ESLATMASI:\n"
+                           f"Do'kon: {dokon}\n{tel_str}\n"
+                           f"Mahsulot: {prod} {qty} {unit}\n\n"
+                           f"Tovar topshirilganiga 24 soat bo'ldi.\n"
+                           f"Yangi zakaz bormi? Do'kon bilan bog'laning!")
+                else:
+                    msg = (f"📋 НАПОМИНАНИЕ 24 ЧАСА:\n"
+                           f"Магазин: {dokon}\n{tel_str}\n"
+                           f"Товар: {prod} {qty} {unit}\n\n"
+                           f"Прошло 24 часа с момента поставки.\n"
+                           f"Нужен новый заказ? Свяжитесь с магазином!")
+                await ctx.bot.send_message(int(dist_id), msg)
+            except Exception as e:
+                logger.error(f"tovar_24h_reminder dist {dist_id}: {e}")
+    except Exception as e:
+        logger.error(f"tovar_24h_reminder: {e}")
+
+
     """Har kuni 09:00 qarz eslatmasi"""
     try:
         for u in db_all("Foydalanuvchilar"):
@@ -1263,6 +1325,8 @@ def main():
     app.job_queue.run_daily(debt_reminder, time=dtime(9,0))
     # Har kuni 20:00 zakaz eslatmasi (kecha mol berilgan do'konlar)
     app.job_queue.run_daily(auto_zakaz_reminder, time=dtime(20,0))
+    # Har soatda 24h topshirish eslatmasi
+    app.job_queue.run_repeating(tovar_24h_reminder, interval=3600, first=60)
 
     txt      = filters.TEXT & ~filters.COMMAND
     photo_txt= (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
