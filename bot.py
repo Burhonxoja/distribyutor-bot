@@ -44,6 +44,7 @@ def get_products():
     DIST_LINK_ID,
     ZAVOD_PROD, ZAVOD_QTY,
     TOP_STORE, TOP_PROD, TOP_PHOTO, TOP_PAY_TYPE, TOP_PAY_AMOUNT,
+    VOZ_HAL, VOZ_PROD, VOZ_QTY,
     ZAKAZ_COMMENT,
     DI_NAME, DI_ADDR, DI_MCHJ, DI_TEL1, DI_TEL2, DI_EGA_ISM, DI_PHOTO,
     ZAKAZ_FROM_STORE_PROD, ZAKAZ_FROM_STORE_QTY,
@@ -56,7 +57,7 @@ def get_products():
     ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(47)
+) = range(50)
 BRINZA_KEYWORDS = ["brinza", "brinza", "Brinza", "BRINZA"]
 
 def is_brinza(prod_name):
@@ -67,23 +68,38 @@ def format_qty(qty, unit, prod_name="", topshirish=False):
     """
     Birlik va mahsulotga qarab format:
     - Brinza ZAKAZ: dona (butun son)
-    - Brinza TOPSHIRISH: kg (float)
-    - Boshqa dona mahsulotlar: dona (butun son)
-    - kg/litr: 3 decimal
+    - Brinza TOPSHIRISH: kg (2 yoki 3 decimal, faqat kerak bo'lsa)
+    - dona mahsulotlar: butun son
+    - kg/litr: agar butun son bo'lsa N kg, bo'lmasa N.NNN kg
     """
+    def fmt_kg(v):
+        """2 ko'rinishi: 2 kg, 2.5 kg, 2.455 kg (ortiqcha nolsiz)"""
+        if v == int(v): return f"{int(v)} kg"
+        # 3 decimal, lekin ortiqcha nollarni olib tashla
+        s = f"{v:.3f}".rstrip('0').rstrip('.')
+        return f"{s} kg"
+
+    def fmt_litr(v):
+        if v == int(v): return f"{int(v)} litr"
+        s = f"{v:.3f}".rstrip('0').rstrip('.')
+        return f"{s} litr"
+
     if is_brinza(prod_name):
         if topshirish:
-            return f"{float(qty):.3f} kg"
+            return fmt_kg(float(qty))
         else:
             return f"{int(round(qty))} dona"
     elif unit == "dona":
         return f"{int(round(qty))} dona"
     elif unit == "kg":
-        return f"{float(qty):.3f} kg"
+        return fmt_kg(float(qty))
     elif unit == "litr":
-        return f"{float(qty):.3f} litr"
+        return fmt_litr(float(qty))
     else:
-        return f"{qty} {unit}"
+        v = float(qty)
+        if v == int(v): return f"{int(v)} {unit}"
+        s = f"{v:.3f}".rstrip('0').rstrip('.')
+        return f"{s} {unit}"
 
 
 
@@ -110,6 +126,7 @@ SHEET_HEADERS = {
     "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID"],
     "Tolov":            ["Sana","Dist_ID","Dokon","Dokon_ID","Summa","Status","Tolov_ID"],
     "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Status","Izoh","Zakaz_ID"],
+    "Vozvrat":          ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Voz_ID"],
 }
 
 def get_ws(name):
@@ -232,6 +249,62 @@ def get_stores(dist_id=None):
         if dist_id: return [r for r in recs if str(r.get("Dist_ID","")).strip()==str(dist_id).strip()]
         return recs
     except Exception: return []
+
+def get_ombor(dist_id):
+    """Distribyutorning joriy ombori: qabul - topshirish + vozvrat"""
+    uid = str(dist_id)
+    st = {}
+    for r in db_all("Qabul"):
+        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
+            k = r.get("Mahsulot","")
+            st[k] = st.get(k,0) + float(r.get("Miqdor",0) or 0)
+    for r in db_all("Topshirish"):
+        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
+            k = r.get("Mahsulot","")
+            st[k] = st.get(k,0) - float(r.get("Miqdor",0) or 0)
+    for r in db_all("Vozvrat"):
+        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
+            k = r.get("Mahsulot","")
+            st[k] = st.get(k,0) + float(r.get("Miqdor",0) or 0)
+    return {k:v for k,v in st.items() if v>0.001}
+
+def get_ombor_qty(dist_id, prod_name):
+    """Ombordan bitta mahsulot miqdori"""
+    return get_ombor(dist_id).get(prod_name, 0.0)
+
+
+def _ombor_prod_list(dist_id, la):
+    """Ombordan faqat mavjud mahsulotlar"""
+    ombor = get_ombor(str(dist_id))
+    prods = get_products()
+    result = []
+    for p in prods:
+        qty = ombor.get(p[la], ombor.get(p["uz"], ombor.get(p["ru"], 0.0)))
+        if qty > 0.001:
+            result.append((p, qty))
+    return result
+
+def _ombor_prod_kb_markup(dist_id, la):
+    """Ombordan faqat mavjud mahsulotlar klaviatura"""
+    items = _ombor_prod_list(dist_id, la)
+    rows = []
+    prods_la = [p[la] for p,_ in items]
+    for i in range(0, len(prods_la), 2):
+        r = [prods_la[i]]
+        if i+1 < len(prods_la): r.append(prods_la[i+1])
+        rows.append(r)
+    rows.append(["🔙 Orqaga" if la=="uz" else "🔙 Назад"])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+def _ombor_prod_kb(dist_id, la):
+    items = _ombor_prod_list(dist_id, la)
+    if not items: return "❌ Ombor bo'sh!" if la=="uz" else "❌ Склад пуст!"
+    lines = ["📦 Ombordan tanlang:" if la=="uz" else "📦 Выберите из склада:"]
+    for p, qty in items:
+        unit = p.get("unit","")
+        lines.append(f"  • {p[la]}: {format_qty(qty, unit, prod_name=p[la], topshirish=True)}")
+    return "\n".join(lines)
+
 
 def get_debt(dokon_id):
     try:
@@ -645,12 +718,22 @@ async def top_store(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(msg,reply_markup=prod_kb(la)); return TOP_PROD
 
 async def top_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
+    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
     if t==tx("back",la):
         stores=ctx.user_data.get("stores",[]); await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
     p=find_prod(t,la)
-    if not p: await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return TOP_PROD
+    if not p: await upd.message.reply_text(_ombor_prod_kb(uid,la),reply_markup=_ombor_prod_kb_markup(uid,la)); return TOP_PROD
+    # Omborda borligini tekshirish
+    ombor = get_ombor(uid)
+    prod_qty = ombor.get(p[la], ombor.get(p["uz"], ombor.get(p["ru"], 0.0)))
+    if prod_qty <= 0:
+        await upd.message.reply_text(
+            f"❌ {p[la]} omborда yo'q!\nBoshqa mahsulot tanlang." if la=="uz"
+            else f"❌ {p[la]} нет на складе!\nВыберите другой товар.",
+            reply_markup=_ombor_prod_kb_markup(uid,la))
+        return TOP_PROD
     ctx.user_data["p"]=p
+    ctx.user_data["max_qty"]=prod_qty  # ombordagi max miqdor
     if is_brinza(t):
         # Brinza - tarozi rasmi MAJBURIY
         await upd.message.reply_text(
@@ -717,7 +800,14 @@ async def top_pay_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("back",la): return TOP_PHOTO
     if t==tx("realizatsiya",la):
         ctx.user_data["pay_type"]="realizatsiya"; ctx.user_data["top_naqd"]=0.0
-        await _save_top(upd,ctx); return TOP_STORE
+        # Vozvrat so'rash
+        ctx.user_data["voz_after_pay"]=True
+        bor = "Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
+        yoq = "Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
+        await upd.message.reply_text(
+            "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
+            reply_markup=ReplyKeyboardMarkup([[bor],[yoq]], resize_keyboard=True))
+        return VOZ_HAL
     if t==tx("naqd",la):
         ctx.user_data["pay_type"]="naqd"
         await upd.message.reply_text(tx("top_naqd_sum",la),reply_markup=back_kb(la)); return TOP_PAY_AMOUNT
@@ -728,7 +818,152 @@ async def top_pay_amount(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("back",la): return TOP_PAY_TYPE
     amount=parse_money(t)
     if amount<0: await upd.message.reply_text(tx("err_money",la)); return TOP_PAY_AMOUNT
-    ctx.user_data["top_naqd"]=amount; await _save_top(upd,ctx); return TOP_STORE
+    ctx.user_data["top_naqd"]=amount
+    # Vozvrat so'rash
+    bor = "Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
+    yoq = "Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
+    await upd.message.reply_text(
+        "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
+        reply_markup=ReplyKeyboardMarkup([[bor],[yoq]], resize_keyboard=True))
+    return VOZ_HAL
+
+
+
+async def voz_hal(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Vozvrat bor/yo'q"""
+    la=lg(ctx); t=upd.message.text or ""
+    bor_uz = "Ha, vozvrat bor"; bor_ru = "Да, есть возврат"
+    if t in (bor_uz, bor_ru):
+        # Ombordan mahsulot tanlash
+        uid = str(upd.effective_user.id)
+        store = ctx.user_data.get("s",{})
+        # Do'konga topshirilgan mahsulotlarni tanlash
+        store_id = str(store.get("ID",""))
+        store_tops = [r for r in db_all("Topshirish")
+                      if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="tasdiqlangan"]
+        if not store_tops:
+            await upd.message.reply_text(
+                "Bu do'konga hali tovar topshirilmagan." if la=="uz"
+                else "Товар этому магазину ещё не поставлялся.",
+                reply_markup=_ombor_prod_kb_markup(uid,la))
+            # Vozvrat yo'q kabi davom etish
+            await _save_top(upd,ctx)
+            return TOP_STORE
+        # Topshirilgan mahsulotlar ro'yxati
+        prods_set = {}
+        for r in store_tops:
+            pn = r.get("Mahsulot","")
+            prods_set[pn] = prods_set.get(pn,0) + float(r.get("Miqdor",0) or 0)
+        ctx.user_data["voz_prods"] = prods_set
+        rows = [[pn] for pn in prods_set.keys()]
+        rows.append([tx("back",la)])
+        await upd.message.reply_text(
+            "Qaysi mahsulot qaytarildi?" if la=="uz" else "Какой товар возвращается?",
+            reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
+        return VOZ_PROD
+    else:
+        # Vozvrat yo'q — to'g'ridan saqlash
+        await _save_top(upd,ctx)
+        return TOP_STORE
+
+async def voz_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Vozvrat mahsuloti"""
+    la=lg(ctx); t=upd.message.text or ""
+    if t==tx("back",la):
+        await _save_top(upd,ctx); return TOP_STORE
+    prods_set = ctx.user_data.get("voz_prods",{})
+    if t not in prods_set:
+        rows = [[pn] for pn in prods_set.keys()]; rows.append([tx("back",la)])
+        await upd.message.reply_text("Mahsulotni tanlang:", reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
+        return VOZ_PROD
+    ctx.user_data["voz_prod_name"] = t
+    # Brinza dona, boshqalar kg
+    if is_brinza(t):
+        await upd.message.reply_text(
+            f"Nechta {t} qaytarildi? (dona, butun son):" if la=="uz"
+            else f"Сколько {t} возвращается? (штук, целое число):",
+            reply_markup=back_kb(la))
+    else:
+        await upd.message.reply_text(
+            f"{t} necha kg qaytarildi? (masalan: 2.5):" if la=="uz"
+            else f"Сколько кг {t} возвращается? (например: 2.5):",
+            reply_markup=back_kb(la))
+    return VOZ_QTY
+
+async def voz_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Vozvrat miqdori"""
+    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
+    if t==tx("back",la):
+        prods_set=ctx.user_data.get("voz_prods",{})
+        rows=[[pn] for pn in prods_set.keys()]; rows.append([tx("back",la)])
+        await upd.message.reply_text("Mahsulotni tanlang:", reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
+        return VOZ_PROD
+    prod_name = ctx.user_data.get("voz_prod_name","")
+    store = ctx.user_data.get("s",{})
+    store_id = str(store.get("ID","")); store_name = store.get("Nomi","")
+    # Miqdor parse
+    if is_brinza(prod_name):
+        try: qty = int(float(t.strip().replace(",",".")))
+        except: qty = 0
+        if qty <= 0:
+            await upd.message.reply_text("Butun son kiriting:"); return VOZ_QTY
+        birlik = "dona"
+    else:
+        qty = parse_weight(t)
+        if qty <= 0:
+            await upd.message.reply_text(tx("err_weight",la)); return VOZ_QTY
+        birlik = "kg"
+    # Narx topish
+    p_obj = next((p for p in get_products() if p["uz"]==prod_name or p["ru"]==prod_name), None)
+    price, _ = get_price(p_obj["id"], dist_id=str(uid), dokon_id=store_id) if p_obj else (0,0)
+    jami = qty * price
+    voz_id = make_op_id("V")
+    db_append("Vozvrat",[now_str(),str(uid),store_name,store_id,prod_name,qty,birlik,price,jami,"tasdiqlangan",voz_id])
+    qty_str = format_qty(qty, birlik, prod_name=prod_name, topshirish=(birlik=="kg"))
+    # Vozvrat qarzdan ayirish
+    pay_type = ctx.user_data.get("pay_type","")
+    naqd = ctx.user_data.get("top_naqd",0.0)
+    # Vozvrat summasi qarzdan yoki to'lovdan ayiriladi
+    ctx.user_data["voz_jami"] = jami
+    await upd.message.reply_text(
+        f"✅ Vozvrat qayd etildi:\n"
+        f"📦 {prod_name}: {qty_str}\n"
+        f"💰 Vozvrat summasi: {jami:,.0f} so'm" if la=="uz" else
+        f"✅ Возврат записан:\n"
+        f"📦 {prod_name}: {qty_str}\n"
+        f"💰 Сумма возврата: {jami:,.0f} сум")
+    # Saqlash
+    await _save_top_with_voz(upd, ctx)
+    return TOP_STORE
+
+async def _save_top_with_voz(upd, ctx):
+    """Topshirishni vozvrat summasi bilan saqlash"""
+    la=lg(ctx); uid=upd.effective_user.id
+    p=ctx.user_data["p"]; store=ctx.user_data["s"]
+    qty=ctx.user_data["top_qty"]
+    naqd=ctx.user_data.get("top_naqd",0.0)
+    voz_jami=ctx.user_data.get("voz_jami",0.0)
+    pay_type=ctx.user_data.get("pay_type","naqd")
+    store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
+    price,_=get_price(p["id"],dist_id=str(uid),dokon_id=store_id)
+    jami=qty*price
+    # Vozvrat summasi qarzdan ayiriladi
+    effective_naqd = min(naqd + voz_jami, jami)
+    qarz = max(0.0, jami - effective_naqd)
+    top_id=make_op_id("T")
+    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
+    db_append("Topshirish",[now_str(),str(uid),store_name,store_id,p[la],qty,p["unit"],
+               price,jami,pay_type,effective_naqd,qarz,"tasdiqlangan",top_id])
+    unit_str = format_qty(qty, p["unit"], prod_name=p[la], topshirish=True)
+    msg = (f"✅ Mol topshirildi: {store_name}\n"
+           f"📦 {p[la]}: {unit_str}\n"
+           f"💰 Jami: {jami:,.0f}\n")
+    if voz_jami>0:
+        msg += f"↩️ Vozvrat: -{voz_jami:,.0f}\n"
+    msg += f"💵 Naqd: {effective_naqd:,.0f}\nQarz: {qarz:,.0f}"
+    await upd.message.reply_text(msg, reply_markup=store_kb(ctx.user_data.get("stores",[]),la))
+    ctx.user_data.pop("voz_jami",None)
+
 
 async def _save_top(upd, ctx):
     la=lg(ctx); uid=upd.effective_user.id
@@ -740,8 +975,9 @@ async def _save_top(upd, ctx):
     jami=qty*price; qarz=max(0.0,jami-naqd); top_id=make_op_id("T")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     db_append("Topshirish",[now_str(),str(uid),store_name,store_id,p[la],qty,p["unit"],price,jami,pay_type,naqd,qarz,"tasdiqlangan",top_id])
+    unit_str = format_qty(qty, p["unit"], prod_name=p[la], topshirish=True)
     await upd.message.reply_text(
-        f"✅ {store_name}\n{p[la]}: {qty} {p['unit']}\nJami: {jami:,.0f}\nNaqd: {naqd:,.0f}\nQarz: {qarz:,.0f}",
+        f"✅ {store_name}\n{p[la]}: {unit_str}\nJami: {jami:,.0f}\nNaqd: {naqd:,.0f}\nQarz: {qarz:,.0f}",
         reply_markup=store_kb(ctx.user_data.get("stores",[]),la))
 
 async def tok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1018,7 +1254,14 @@ async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("topshir",la):
         stores=get_stores(dist_id=uid)
         if not stores: await upd.message.reply_text(tx("no_store",la)); return MAIN_MENU
+        ombor = get_ombor(uid)
+        if not ombor:
+            await upd.message.reply_text(
+                "❌ Omboringiz bo'sh!\nAvval zavoddan tovar qabul qiling." if la=="uz"
+                else "❌ Склад пуст!\nСначала получите товар с завода.")
+            return MAIN_MENU
         ctx.user_data["stores"]=stores
+        ctx.user_data["ombor"]=ombor
         await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
     if t==tx("buyurtma",la):      await _show_buyurtmalar(upd,ctx); return MAIN_MENU
     if t==tx("natija",la):        await daily(upd,ctx); return MAIN_MENU
@@ -1142,14 +1385,20 @@ async def hisobot_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         stores=get_stores(dist_id=uid)
         jami_qarz=sum(get_debt(str(s.get("ID",""))) for s in stores)
         foyda=calc_foyda(uid,from_dt)
+        # Vozvrat
+        vozlar=[r for r in db_all("Vozvrat") if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
+        voz_jami=sum(float(r.get("Jami",0) or 0) for r in vozlar)
+        voz_cnt=len(vozlar)
         period=("7 kun" if days==7 else "30 kun") if la=="uz" else ("7 дней" if days==7 else "30 дней")
-        msg=(f"📈 Hisobot: {period}\n---\n"
+        msg=(f"📈 Hisobot: {period}\n━━━━━━━━━━━━━━━━\n"
              f"📥 Qabul: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
              f"💵 Naqd: {tn:,.0f}\n📝 Davr qarzi: {tq:,.0f}\n"
+             f"↩️ Vozvrat: {voz_cnt} ta / {voz_jami:,.0f}\n"
              f"💸 Jami qarz: {jami_qarz:,.0f}\n💰 Foyda: {foyda:,.0f}" if la=="uz" else
-             f"📈 Отчёт: {period}\n---\n"
+             f"📈 Отчёт: {period}\n━━━━━━━━━━━━━━━━\n"
              f"📥 Получено: {ti:,.0f}\n🚚 Продажи: {ts:,.0f}\n"
              f"💵 Наличные: {tn:,.0f}\n📝 Долг (период): {tq:,.0f}\n"
+             f"↩️ Возврат: {voz_cnt} шт / {voz_jami:,.0f}\n"
              f"💸 Общий долг: {jami_qarz:,.0f}\n💰 Прибыль: {foyda:,.0f}")
     except Exception as e: msg=f"Xatolik: {e}"
     sid=get_short_id(upd.effective_user.id)
@@ -1182,24 +1431,40 @@ async def daily(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=str(upd.effective_user.id)
     try:
-        st={}
-        for r in db_all("Qabul"):
-            if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-                k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
-        for r in db_all("Topshirish"):
-            if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-                k=r.get("Mahsulot",""); st[k]=st.get(k,0)-float(r.get("Miqdor",0) or 0)
-        # Mahsulot birligini topish
+        st = get_ombor(uid)
         prods = get_products()
         prod_units = {p["uz"]: p["unit"] for p in prods}
         prod_units.update({p["ru"]: p["unit"] for p in prods})
-        lines=["📦 Ombor:","---"]
+        prod_ids = {p["uz"]: p["id"] for p in prods}
+        prod_ids.update({p["ru"]: p["id"] for p in prods})
+        lines=["📦 Ombor:","━━━━━━━━━━━━━━━━"]
+        total_sotuv=0; total_tannarx=0
         for k,v in st.items():
-            if v>0.001:
-                unit = prod_units.get(k,"")
-                lines.append(f"• {k}: {format_qty(v, unit, prod_name=k, topshirish=True)}")
-        if len(lines)==2: lines.append("Hammasi topshirilgan!" if la=="uz" else "Всё сдано!")
-        await upd.message.reply_text("\n".join(lines))
+            if v<=0.001: continue
+            unit = prod_units.get(k,"")
+            pid  = prod_ids.get(k,0)
+            narx, tannarx = get_price(pid, dist_id=uid) if pid else (0,0)
+            sotuv_s   = v * narx
+            tannarx_s = v * tannarx
+            foyda_s   = sotuv_s - tannarx_s
+            total_sotuv   += sotuv_s
+            total_tannarx += tannarx_s
+            qty_str = format_qty(v, unit, prod_name=k, topshirish=True)
+            lines.append(
+                f"• <b>{k}</b>: {qty_str}\n"
+                f"  💰 Narx: {narx:,.0f} | Sotuv: {sotuv_s:,.0f}\n"
+                f"  📉 Tannarx: {tannarx_s:,.0f} | Foyda: {foyda_s:,.0f}")
+        if len(lines)==2:
+            lines.append("Ombor bo'sh!" if la=="uz" else "Склад пуст!")
+        else:
+            total_foyda = total_sotuv - total_tannarx
+            lines.append("━━━━━━━━━━━━━━━━")
+            lines.append(
+                f"📊 <b>Jami:</b>\n"
+                f"  💰 Sotuv: {total_sotuv:,.0f}\n"
+                f"  📉 Tannarx: {total_tannarx:,.0f}\n"
+                f"  ✅ Foyda: {total_foyda:,.0f} so'm")
+        await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
     except Exception as e: await upd.message.reply_text(f"Xatolik: {e}")
 
 async def marshrut_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1615,6 +1880,9 @@ def main():
             TOP_PHOTO:          [MessageHandler(photo_txt,top_photo)],
             TOP_PAY_TYPE:       [MessageHandler(txt,top_pay_type)],
             TOP_PAY_AMOUNT:     [MessageHandler(txt,top_pay_amount)],
+            VOZ_HAL:            [MessageHandler(txt,voz_hal)],
+            VOZ_PROD:           [MessageHandler(txt,voz_prod)],
+            VOZ_QTY:            [MessageHandler(txt,voz_qty)],
             ZAKAZ_COMMENT:      [MessageHandler(txt,zakaz_comment)],
             DI_NAME:            [MessageHandler(txt,di_name)],
             ZAKAZ_FROM_STORE_PROD:[MessageHandler(txt,zakaz_from_store_prod)],
