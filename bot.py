@@ -57,6 +57,24 @@ def get_products():
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
 ) = range(47)
+BRINZA_KEYWORDS = ["brinza", "brinza", "Brinza", "BRINZA"]
+
+def is_brinza(prod_name):
+    """Brinza mahsulotimi?"""
+    return any(kw.lower() in str(prod_name).lower() for kw in BRINZA_KEYWORDS)
+
+def format_qty(qty, unit, prod_name=""):
+    """Birlik va mahsulotga qarab format"""
+    if unit in ("dona",) and not is_brinza(prod_name):
+        return f"{int(round(qty))} {unit}"
+    elif unit == "kg" or is_brinza(prod_name):
+        return f"{qty:.3f} kg"
+    elif unit == "litr":
+        return f"{qty:.3f} litr"
+    else:
+        return f"{qty} {unit}"
+
+
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 def get_creds_dict():
@@ -622,19 +640,50 @@ async def top_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     p=find_prod(t,la)
     if not p: await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return TOP_PROD
     ctx.user_data["p"]=p
-    await upd.message.reply_text(f"{t}\n\n{tx('photo_scale',la)}",reply_markup=back_kb(la)); return TOP_PHOTO
+    if is_brinza(t):
+        # Brinza - tarozi rasmi MAJBURIY
+        await upd.message.reply_text(
+            f"🧀 Brinza topshirish:\n"
+            f"📸 Tarozi rasmini yuboring (MAJBURIY)\n"
+            f"Brinza kg da hisoblanadi, rasm admin uchun kerak!" if la=="uz" else
+            f"🧀 Передача брынзы:\n"
+            f"📸 Фото весов ОБЯЗАТЕЛЬНО\n"
+            f"Брынза считается в кг, фото нужно для отчёта!",
+            reply_markup=back_kb(la))
+        ctx.user_data["brinza_mode"]=True
+    else:
+        ctx.user_data.pop("brinza_mode",None)
+        await upd.message.reply_text(f"{t}\n\n{tx('photo_scale',la)}",reply_markup=back_kb(la))
+    return TOP_PHOTO
 
 async def top_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
+    brinza_mode = ctx.user_data.get("brinza_mode", False)
+
     if upd.message.photo:
         await upd.message.reply_text(tx("reading",la))
         file=await ctx.bot.get_file(upd.message.photo[-1].file_id)
         img=bytes(await file.download_as_bytearray()); raw=await vision_ocr(img); w=parse_scale(raw)
         if w>0:
             ctx.user_data["_w"]=w; await upd.message.reply_text(tx("ocr_ok",la,v=w),reply_markup=yes_kb(la)); return TOP_PHOTO
-        await upd.message.reply_text(tx("ocr_fail",la),reply_markup=back_kb(la)); return TOP_PHOTO
+        # Rasm o'qilmasa ham, brinza uchun qo'lda kiritish mumkin
+        await upd.message.reply_text(
+            "❌ Rasmdan o'qilmadi. Og'irlikni kg da kiriting (masalan: 3.455):" if la=="uz"
+            else "❌ Не удалось считать. Введите вес в кг (например: 3.455):",
+            reply_markup=back_kb(la))
+        return TOP_PHOTO
+
     t=upd.message.text or ""
     if t==tx("back",la): await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return TOP_PROD
+
+    # Brinza uchun rasm MAJBURIY - matn qabul qilinmaydi faqat "_w" bo'lsa
+    if brinza_mode and "_w" not in ctx.user_data:
+        await upd.message.reply_text(
+            "🧀 Brinza uchun tarozi rasmini yuboring!\nRasmsiz topshirib bo'lmaydi." if la=="uz"
+            else "🧀 Для брынзы ОБЯЗАТЕЛЬНО фото весов!\nБез фото нельзя передать.",
+            reply_markup=back_kb(la))
+        return TOP_PHOTO
+
     if "_w" in ctx.user_data:
         if t.upper() in ["HA","ДА","YES","OK"]: qty=ctx.user_data.pop("_w")
         else:
@@ -985,12 +1034,44 @@ async def _show_qarzdorlar(upd,ctx):
 async def _show_buyurtmalar(upd,ctx):
     la=lg(ctx); uid=str(upd.effective_user.id)
     orders=[r for r in db_all("Buyurtmalar") if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="Yangi"]
-    if not orders: await upd.message.reply_text("📋 Yangi zakaz yo'q" if la=="uz" else "📋 Новых заказов нет"); return
-    lines=[f"📋 Yangi zakazlar: {len(orders)}","---"]
+    if not orders:
+        await upd.message.reply_text("📋 Yangi zakaz yo'q" if la=="uz" else "📋 Новых заказов нет")
+        return
+    # Do'kon bo'yicha guruhlash
+    by_dokon = {}
     for r in orders:
-        zid=r.get("Zakaz_ID","")
-        lines.append(f"• {r.get('Dokon','')} | {r.get('Mahsulot','')} {r.get('Miqdor','')} | {r.get('Sana','')[:10]}\n  ✅ /zqabul_{zid} | ❌ /zrad_z_{zid}")
-    await upd.message.reply_text("\n".join(lines))
+        dk = r.get("Dokon","?")
+        if dk not in by_dokon: by_dokon[dk]=[]
+        by_dokon[dk].append(r)
+    # Mahsulot jami hisobi
+    jami_prod = {}
+    for r in orders:
+        prod = r.get("Mahsulot","")
+        qty  = float(r.get("Miqdor",0) or 0)
+        jami_prod[prod] = jami_prod.get(prod,0) + qty
+    lines=[f"📋 Yangi zakazlar: {len(orders)} ta","━━━━━━━━━━━━━━━━"]
+    # Har bir do'kon
+    for dokon, recs in by_dokon.items():
+        lines.append(f"🏪 <b>{dokon}:</b>")
+        for r in recs:
+            prod = r.get("Mahsulot",""); qty = float(r.get("Miqdor",0) or 0)
+            unit = r.get("Birlik","") or ""
+            # Brinzani dona ko'rsatish
+            if is_brinza(prod): qty_str=f"{int(round(qty))} dona"
+            elif unit=="dona":   qty_str=f"{int(round(qty))} {unit}"
+            else:                qty_str=f"{qty:.3f} {unit}"
+            zid=r.get("Zakaz_ID","")
+            lines.append(f"  • {prod}: {qty_str} | {r.get('Sana','')[:10]}")
+        lines.append("")
+    # Jami hisobi
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("📊 <b>Jami kerak:</b>" if la=="uz" else "📊 <b>Итого нужно:</b>")
+    for prod, qty in jami_prod.items():
+        unit_str = "dona" if is_brinza(prod) else ""
+        if is_brinza(prod): lines.append(f"  • {prod}: {int(round(qty))} dona")
+        elif qty == int(qty): lines.append(f"  • {prod}: {int(qty)}")
+        else: lines.append(f"  • {prod}: {qty:.3f}")
+    await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def _show_my_stores(upd,ctx):
     la=lg(ctx); uid=str(upd.effective_user.id)
@@ -1451,15 +1532,33 @@ async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows.append([tx("back",la)])
         await upd.message.reply_text(tx("prod",la),reply_markup=ReplyKeyboardMarkup(rows,resize_keyboard=True))
         return ZAKAZ_FROM_STORE_PROD
-    qty=parse_weight(t)
-    if qty<=0: await upd.message.reply_text(tx("err_num",la)); return ZAKAZ_FROM_STORE_QTY
     p=ctx.user_data.get("zakaz_p",{}); store=ctx.user_data.get("zakaz_store",{})
+    prod_name=p.get(la,"")
+    # Brinza - butun son (dona), boshqalar float
+    if is_brinza(prod_name):
+        try: qty=float(t.strip().replace(",","."))
+        except: qty=0
+        if qty<=0 or qty!=int(qty):
+            await upd.message.reply_text(
+                "❗ Brinza dona bilan kiritiladi! Butun son kiriting (masalan: 3):" if la=="uz"
+                else "❗ Брынза считается штуками! Введите целое число (например: 3):",
+                reply_markup=back_kb(la))
+            return ZAKAZ_FROM_STORE_QTY
+        qty=int(qty)
+        qty_str=f"{qty} dona"
+        birlik="dona"
+    else:
+        qty=parse_weight(t)
+        if qty<=0: await upd.message.reply_text(tx("err_num",la)); return ZAKAZ_FROM_STORE_QTY
+        unit=p.get("unit","")
+        qty_str=f"{qty:.3f} {unit}" if unit not in ("dona",) else f"{int(round(qty))} {unit}"
+        birlik=unit
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    dist_id=str(uid); zakaz_id=make_op_id("Z")
-    db_append("Buyurtmalar",[now_str(),store_id,store_name,dist_id,p[la],qty,"Yangi","",zakaz_id])
+    zakaz_id=make_op_id("Z")
+    db_append("Buyurtmalar",[now_str(),store_id,store_name,str(uid),prod_name,qty,"Yangi","",zakaz_id])
     await upd.message.reply_text(
-        f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {p[la]}: {qty} {p['unit']}" if la=="uz"
-        else f"✅ Заказ добавлен!\n🏪 {store_name}\n📦 {p[la]}: {qty} {p['unit']}")
+        f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}" if la=="uz"
+        else f"✅ Заказ добавлен!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}")
     await _show_my_stores(upd,ctx)
     return DI_NAME
 
