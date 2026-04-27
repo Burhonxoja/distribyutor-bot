@@ -63,14 +63,25 @@ def is_brinza(prod_name):
     """Brinza mahsulotimi?"""
     return any(kw.lower() in str(prod_name).lower() for kw in BRINZA_KEYWORDS)
 
-def format_qty(qty, unit, prod_name=""):
-    """Birlik va mahsulotga qarab format"""
-    if unit in ("dona",) and not is_brinza(prod_name):
-        return f"{int(round(qty))} {unit}"
-    elif unit == "kg" or is_brinza(prod_name):
-        return f"{qty:.3f} kg"
+def format_qty(qty, unit, prod_name="", topshirish=False):
+    """
+    Birlik va mahsulotga qarab format:
+    - Brinza ZAKAZ: dona (butun son)
+    - Brinza TOPSHIRISH: kg (float)
+    - Boshqa dona mahsulotlar: dona (butun son)
+    - kg/litr: 3 decimal
+    """
+    if is_brinza(prod_name):
+        if topshirish:
+            return f"{float(qty):.3f} kg"
+        else:
+            return f"{int(round(qty))} dona"
+    elif unit == "dona":
+        return f"{int(round(qty))} dona"
+    elif unit == "kg":
+        return f"{float(qty):.3f} kg"
     elif unit == "litr":
-        return f"{qty:.3f} litr"
+        return f"{float(qty):.3f} litr"
     else:
         return f"{qty} {unit}"
 
@@ -665,19 +676,22 @@ async def top_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         file=await ctx.bot.get_file(upd.message.photo[-1].file_id)
         img=bytes(await file.download_as_bytearray()); raw=await vision_ocr(img); w=parse_scale(raw)
         if w>0:
-            ctx.user_data["_w"]=w; await upd.message.reply_text(tx("ocr_ok",la,v=w),reply_markup=yes_kb(la)); return TOP_PHOTO
-        # Rasm o'qilmasa ham, brinza uchun qo'lda kiritish mumkin
+            ctx.user_data["_w"]=w
+            ctx.user_data["scale_photo_id"] = upd.message.photo[-1].file_id
+            await upd.message.reply_text(tx("ocr_ok",la,v=w),reply_markup=yes_kb(la)); return TOP_PHOTO
+        # Rasm o'qilmasa - rasm saqlab, og'irlikni qo'lda so'rash
+        ctx.user_data["scale_photo_id"] = upd.message.photo[-1].file_id
         await upd.message.reply_text(
-            "❌ Rasmdan o'qilmadi. Og'irlikni kg da kiriting (masalan: 3.455):" if la=="uz"
-            else "❌ Не удалось считать. Введите вес в кг (например: 3.455):",
+            "📷 Rasm saqlandi!\nOg'irlikni kg da kiriting (masalan: 3.455):" if la=="uz"
+            else "📷 Фото сохранено!\nВведите вес в кг (например: 3.455):",
             reply_markup=back_kb(la))
         return TOP_PHOTO
 
     t=upd.message.text or ""
     if t==tx("back",la): await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return TOP_PROD
 
-    # Brinza uchun rasm MAJBURIY - matn qabul qilinmaydi faqat "_w" bo'lsa
-    if brinza_mode and "_w" not in ctx.user_data:
+    # Brinza uchun rasm MAJBURIY - faqat rasm yuborilmagan bo'lsa
+    if brinza_mode and "_w" not in ctx.user_data and "scale_photo_id" not in ctx.user_data:
         await upd.message.reply_text(
             "🧀 Brinza uchun tarozi rasmini yuboring!\nRasmsiz topshirib bo'lmaydi." if la=="uz"
             else "🧀 Для брынзы ОБЯЗАТЕЛЬНО фото весов!\nБез фото нельзя передать.",
@@ -1057,9 +1071,7 @@ async def _show_buyurtmalar(upd,ctx):
             prod = r.get("Mahsulot",""); qty = float(r.get("Miqdor",0) or 0)
             unit = r.get("Birlik","") or ""
             # Brinzani dona ko'rsatish
-            if is_brinza(prod): qty_str=f"{int(round(qty))} dona"
-            elif unit=="dona":   qty_str=f"{int(round(qty))} {unit}"
-            else:                qty_str=f"{qty:.3f} {unit}"
+            qty_str = format_qty(qty, unit, prod_name=prod, topshirish=False)
             zid=r.get("Zakaz_ID","")
             lines.append(f"  • {prod}: {qty_str} | {r.get('Sana','')[:10]}")
         lines.append("")
@@ -1068,9 +1080,12 @@ async def _show_buyurtmalar(upd,ctx):
     lines.append("📊 <b>Jami kerak:</b>" if la=="uz" else "📊 <b>Итого нужно:</b>")
     for prod, qty in jami_prod.items():
         unit_str = "dona" if is_brinza(prod) else ""
-        if is_brinza(prod): lines.append(f"  • {prod}: {int(round(qty))} dona")
-        elif qty == int(qty): lines.append(f"  • {prod}: {int(qty)}")
-        else: lines.append(f"  • {prod}: {qty:.3f}")
+        unit_j = ""
+        for r2 in orders:
+            if r2.get("Mahsulot","")==prod:
+                unit_j = r2.get("Birlik","") or ""
+                break
+        lines.append(f"  • {prod}: {format_qty(qty, unit_j, prod_name=prod, topshirish=False)}")
     await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def _show_my_stores(upd,ctx):
@@ -1182,10 +1197,7 @@ async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for k,v in st.items():
             if v>0.001:
                 unit = prod_units.get(k,"")
-                if unit in ("dona",):
-                    lines.append(f"• {k}: {int(round(v))} {unit}")
-                else:
-                    lines.append(f"• {k}: {v:.3f} {unit}")
+                lines.append(f"• {k}: {format_qty(v, unit, prod_name=k, topshirish=True)}")
         if len(lines)==2: lines.append("Hammasi topshirilgan!" if la=="uz" else "Всё сдано!")
         await upd.message.reply_text("\n".join(lines))
     except Exception as e: await upd.message.reply_text(f"Xatolik: {e}")
@@ -1545,7 +1557,7 @@ async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=back_kb(la))
             return ZAKAZ_FROM_STORE_QTY
         qty=int(qty)
-        qty_str=f"{qty} dona"
+        qty_str=f"{qty} dona"  # Zakaz: dona
         birlik="dona"
     else:
         qty=parse_weight(t)
@@ -1555,7 +1567,9 @@ async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         birlik=unit
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
     zakaz_id=make_op_id("Z")
-    db_append("Buyurtmalar",[now_str(),store_id,store_name,str(uid),prod_name,qty,"Yangi","",zakaz_id])
+    # Brinza donalab saqlanadi
+    save_qty = qty  # dona soni
+    db_append("Buyurtmalar",[now_str(),store_id,store_name,str(uid),prod_name,save_qty,"Yangi","",zakaz_id])
     await upd.message.reply_text(
         f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}" if la=="uz"
         else f"✅ Заказ добавлен!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}")
