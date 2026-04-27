@@ -45,7 +45,7 @@ def get_products():
     ZAVOD_PROD, ZAVOD_QTY,
     TOP_STORE, TOP_PROD, TOP_PHOTO, TOP_PAY_TYPE, TOP_PAY_AMOUNT,
     ZAKAZ_COMMENT,
-    DI_NAME, DI_ADDR, DI_MCHJ, DI_TEL1, DI_TEL2, DI_PHOTO, DI_LOC,
+    DI_NAME, DI_ADDR, DI_MCHJ, DI_TEL1, DI_TEL2, DI_EGA_ISM, DI_PHOTO, DI_LOC,
     NARX_PROD, NARX_TYPE, NARX_VAL, NARX_COST,
     NARX_DOKON, NARX_DOKON_VAL, NARX_DOKON_COST,
     HISOBOT_MENU,
@@ -764,45 +764,131 @@ async def di_tel1(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def di_tel2(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text or ""
     ctx.user_data["di_tel2"]="" if t==tx("skip",la) else clean_phone(t)
-    await upd.message.reply_text(tx("dokon_photo_q",la),reply_markup=skip_kb(la)); return DI_PHOTO
+    await upd.message.reply_text(
+        "👤 Do'kon egasining ismi va familiyasini kiriting:" if la=="uz"
+        else "👤 Введите имя и фамилию владельца магазина:",
+        reply_markup=back_kb(la))
+    return DI_EGA_ISM
+
+async def di_ega_ism(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la=lg(ctx); t=upd.message.text or ""
+    if t==tx("back",la):
+        await upd.message.reply_text(tx("dokon_tel2",la),reply_markup=skip_kb(la)); return DI_TEL2
+    ctx.user_data["di_ega_ism"]=t.strip()
+    await upd.message.reply_text(
+        "📸 Do'kon rasmini yuboring:" if la=="uz" else "📸 Отправьте фото магазина:",
+        reply_markup=back_kb(la))
+    return DI_PHOTO
 
 async def di_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx)
-    ctx.user_data["di_photo"]=upd.message.photo[-1].file_id if upd.message.photo else ""
-    await upd.message.reply_text(tx("dokon_loc_q",la),reply_markup=loc_kb(la)); return DI_LOC
+    t = upd.message.text or ""
+    if t == tx("back",la):
+        await upd.message.reply_text(
+            "👤 Do'kon egasining ismi:" if la=="uz" else "👤 Имя владельца:",
+            reply_markup=back_kb(la)); return DI_EGA_ISM
+    if not upd.message.photo:
+        await upd.message.reply_text(
+            "❗ Iltimos do'kon rasmini yuboring.\nRasm bo'lmasa do'kon qo'shib bo'lmaydi." if la=="uz"
+            else "❗ Пожалуйста, отправьте фото магазина.\nБез фото нельзя добавить магазин.",
+            reply_markup=back_kb(la))
+        return DI_PHOTO
+    ctx.user_data["di_photo"] = upd.message.photo[-1].file_id
+    await upd.message.reply_text(
+        "✅ Rasm qabul qilindi!\n\n📍 Endi do'kon lokatsiyasini yuboring.\nLokatsiyasiz do'kon qo'shib bo'lmaydi!" if la=="uz"
+        else "✅ Фото принято!\n\n📍 Теперь отправьте локацию магазина.\nБез локации нельзя добавить магазин!",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("📍 Lokatsiyani yuborish" if la=="uz" else "📍 Отправить локацию", request_location=True)],
+             [tx("back",la)]],
+            resize_keyboard=True))
+    return DI_LOC
 
 async def di_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=upd.effective_user.id
     lat,lng="",""
-    # Lokatsiya yuborilgan bo'lsa
+
     if upd.message.location:
         lat=str(upd.message.location.latitude)
         lng=str(upd.message.location.longitude)
-    # Matn kelgan bo'lsa (Otkazib yuborish yoki Orqaga)
     elif upd.message.text:
         t = upd.message.text
         if t == tx("back",la):
-            await upd.message.reply_text(tx("dokon_photo_q",la),reply_markup=skip_kb(la)); return DI_PHOTO
-        # Otkazib yuborish — lokatsiyasiz saqlash
-    name=ctx.user_data.get("di_name",""); addr=ctx.user_data.get("di_addr","")
-    mchj=ctx.user_data.get("di_mchj",""); tel1=ctx.user_data.get("di_tel1","")
-    tel2=ctx.user_data.get("di_tel2",""); photo=ctx.user_data.get("di_photo","")
+            await upd.message.reply_text(
+                "📸 Do'kon rasmini yuboring:" if la=="uz" else "📸 Отправьте фото магазина:",
+                reply_markup=back_kb(la)); return DI_PHOTO
+        # Koordinata matn: "41.123 69.456"
+        parts = t.replace(",",".").split()
+        if len(parts)==2:
+            try: lat=str(float(parts[0])); lng=str(float(parts[1]))
+            except Exception: pass
+        if not lat:
+            await upd.message.reply_text(
+                "❗ Lokatsiya yuborilmadi!\nIltimos 📍 tugmani bosib lokatsiya yuboring:" if la=="uz"
+                else "❗ Локация не получена!\nНажмите кнопку 📍 для отправки:",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("📍 Lokatsiyani yuborish" if la=="uz" else "📍 Отправить локацию", request_location=True)],
+                     [tx("back",la)]],
+                    resize_keyboard=True))
+            return DI_LOC
+
+    # Rasm majburiy
+    photo = ctx.user_data.get("di_photo","")
+    if not photo:
+        await upd.message.reply_text(
+            "❗ Rasm topilmadi! Qaytib rasm yuboring:" if la=="uz" else "❗ Фото не найдено!",
+            reply_markup=back_kb(la)); return DI_PHOTO
+
+    name = ctx.user_data.get("di_name","")
+    addr = ctx.user_data.get("di_addr","")
+    mchj = ctx.user_data.get("di_mchj","")
+    tel1 = ctx.user_data.get("di_tel1","")
+    tel2 = ctx.user_data.get("di_tel2","")
+    ega_ism = ctx.user_data.get("di_ega_ism","")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     cnt=len(db_all("Dokonlar"))+1
     db_append("Dokonlar",[str(cnt),"",name,addr,mchj,tel1,tel2,str(uid),dn,lat,lng,now_str()])
-    logger.info(f"Do'kon saqlandi: {name} | lat={lat} lng={lng} | dist={uid}")
+    logger.info(f"Do'kon saqlandi: {name} | lat={lat} lng={lng}")
+
+    # Chiroyli xabar
+    maps_link = f"https://maps.google.com/?q={lat},{lng}"
+    card = (
+        f"🏪 <b>{name}</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📍 <b>Manzil:</b> {addr}\n"
+        f"🏢 <b>MCHJ:</b> {mchj if mchj else '—'}\n"
+        f"📞 <b>Raqam:</b> {tel1}\n"
+        f"📞 <b>Qo'shimcha:</b> {tel2 if tel2 else '—'}\n"
+        f"👤 <b>Do'kon egasi:</b> {ega_ism if ega_ism else '—'}\n"
+        f"🚚 <b>Distribyutor:</b> {dn}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🗺 <a href='{maps_link}'>Google Maps da ko'rish</a>"
+    )
+
+    # Adminga xabar
     for admin_id in ADMIN_IDS:
         try:
-            await ctx.bot.send_message(admin_id,
-                f"🏪 YANGI DO'KON:\n{name}\nAdres: {addr}\nTel: {tel1}\nDist: {dn} ({uid})")
-            if lat and lng:
-                await ctx.bot.send_location(admin_id, float(lat), float(lng))
-            if photo:
-                await ctx.bot.send_photo(admin_id, photo, caption=f"Do'kon: {name}")
-        except Exception as e: logger.error(f"do'kon admin notify: {e}")
-    await upd.message.reply_text(tx("dokon_saved",la,name=name))
+            await ctx.bot.send_photo(admin_id, photo, caption=card, parse_mode="HTML")
+            await ctx.bot.send_location(admin_id, float(lat), float(lng))
+        except Exception as e: logger.error(f"admin notify: {e}")
+
+    # Distribyutorga tasdiqlash
+    await upd.message.reply_photo(
+        photo,
+        caption=(
+            f"✅ <b>Do'kon muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"🏪 <b>{name}</b>\n"
+            f"📍 {addr}\n"
+            f"📞 {tel1}"
+        ),
+        parse_mode="HTML")
+    await upd.message.reply_location(float(lat), float(lng))
+
     sid2=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid2),reply_markup=main_kb(la,sid2,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
+    await upd.message.reply_text(
+        tx("main",la,sid=sid2),
+        reply_markup=main_kb(la,sid2,uid in ADMIN_IDS),
+        parse_mode="HTML")
+    return MAIN_MENU
 
 # ── NARX ──────────────────────────────────────────────────────────────────────
 async def narx_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1386,8 +1472,9 @@ def main():
             DI_MCHJ:            [MessageHandler(txt,di_mchj)],
             DI_TEL1:            [MessageHandler(cont_txt,di_tel1)],
             DI_TEL2:            [MessageHandler(cont_txt,di_tel2)],
+            DI_EGA_ISM:         [MessageHandler(txt,di_ega_ism)],
             DI_PHOTO:           [MessageHandler(photo_txt,di_photo)],
-            DI_LOC:             [MessageHandler(loc_txt, di_loc), MessageHandler(txt, di_loc)],
+            DI_LOC:             [MessageHandler(filters.LOCATION | filters.TEXT, di_loc)],
             NARX_PROD:          [MessageHandler(txt,narx_prod)],
             NARX_TYPE:          [MessageHandler(txt,narx_type)],
             NARX_VAL:           [MessageHandler(txt,narx_val)],
