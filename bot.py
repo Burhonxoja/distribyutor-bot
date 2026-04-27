@@ -929,13 +929,27 @@ async def _show_my_stores(upd,ctx):
     stores=get_stores(dist_id=uid); lines=["🏪 Mening do'konlarim:","---"]
     for s in stores:
         debt=get_debt(str(s.get("ID",""))); d=f" | Qarz: {debt:,.0f}" if debt>0 else ""
-        lat=s.get("Lat",""); lng=s.get("Lng",""); loc=f"\n  📍 {lat},{lng}" if lat and lng else ""
-        lines.append(f"• {s.get('Nomi','')}{d}\n  📞 {s.get('Tel1','')}{loc}")
+        lat=s.get("Lat",""); lng=s.get("Lng","")
+        loc_icon = " 📍" if lat and lng else ""
+        lines.append(f"• {s.get('Nomi','')}{d}{loc_icon}\n  📞 {s.get('Tel1','')}")
     if len(lines)==2: lines.append("Do'konlar yo'q" if la=="uz" else "Магазинов нет")
     add_btn = "➕ Yangi do'kon qo'shish" if la=="uz" else "➕ Добавить новый магазин"
     lines.append(f"\n{add_btn}:")
     await upd.message.reply_text("\n".join(lines),
         reply_markup=ReplyKeyboardMarkup([[add_btn],[tx("back",la)]], resize_keyboard=True))
+    # Har bir do'kon uchun lokatsiya yuborish
+    for s in stores:
+        lat=s.get("Lat",""); lng=s.get("Lng","")
+        if lat and lng:
+            try:
+                await upd.message.reply_location(
+                    latitude=float(lat),
+                    longitude=float(lng),
+                    # Do'kon nomi caption sifatida
+                )
+                await upd.message.reply_text(f"📍 {s.get('Nomi','')} — {s.get('Adres','-')}")
+            except Exception as e:
+                logger.error(f"lokatsiya yuborish: {e}")
     ctx.user_data["waiting_store_add"] = True
 
 # ── HISOBOT ───────────────────────────────────────────────────────────────────
@@ -1420,4 +1434,3 @@ def main():
 
 if __name__=="__main__":
     main()
- 
