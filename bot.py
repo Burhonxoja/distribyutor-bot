@@ -785,7 +785,10 @@ async def zavod_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("back",la): await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return ZAVOD_PROD
     qty=parse_weight(t)
     if qty<=0: await upd.message.reply_text(tx("err_num",la)); return ZAVOD_QTY
-    p=ctx.user_data["p"]; price,_=get_price(p["id"],dist_id=str(uid))
+    p=ctx.user_data["p"]
+    pid=p.get("id",0)
+    price,_=get_price(pid,dist_id=str(uid))
+    if price==0: price,_=get_price(pid)
     jami=qty*price; qid=make_op_id("Q")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     sid=u.get("Short_ID","?") if u else "ADMIN"
@@ -1106,7 +1109,10 @@ async def _save_top_with_voz(upd, ctx):
     voz_jami=ctx.user_data.get("voz_jami",0.0)
     pay_type=ctx.user_data.get("pay_type","naqd")
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    price,_=get_price(p["id"],dist_id=str(uid),dokon_id=store_id)
+    pid = p.get("id", 0)
+    price, _ = get_price(pid, dist_id=str(uid), dokon_id=store_id)
+    if price == 0: price, _ = get_price(pid, dist_id=str(uid))
+    if price == 0: price, _ = get_price(pid)
     jami=qty*price
     # Vozvrat summasi qarzdan ayiriladi
     effective_naqd = min(naqd + voz_jami, jami)
@@ -1131,13 +1137,16 @@ async def _check_qty_vs_zakaz(upd, ctx, qty):
     la=lg(ctx)
     p=ctx.user_data.get("p",{}); store_orders=ctx.user_data.get("store_orders",[])
     prod_name=p.get(la,"")
+    unit=p.get("unit","")
+    # Brinza: zakaz dona, topshirish kg — taqqoslab bo'lmaydi
+    if is_brinza(prod_name):
+        return False  # Brinza uchun ogohlantirish yo'q
     zakaz_qty=0
     for r in store_orders:
-        if r.get("Mahsulot","") == prod_name:
+        if r.get("Mahsulot","").lower() == prod_name.lower():
             zakaz_qty+=float(r.get("Miqdor",0) or 0)
     if zakaz_qty>0 and qty>zakaz_qty:
         diff=qty-zakaz_qty
-        unit=p.get("unit","")
         zakaz_str=format_qty(zakaz_qty,unit,prod_name=prod_name,topshirish=True)
         extra_str=format_qty(diff,unit,prod_name=prod_name,topshirish=True)
         msg=(f"🎉 Ajoyib! Do'kon {zakaz_str} zakaz qilgan edi, sen {extra_str} qo'shimcha beryapsan — bu savdo mahorati!\n\n"
@@ -1161,7 +1170,13 @@ async def _save_top(upd, ctx):
     qty=ctx.user_data["top_qty"]; naqd=ctx.user_data.get("top_naqd",0.0)
     pay_type=ctx.user_data.get("pay_type","naqd")
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    price,_=get_price(p["id"],dist_id=str(uid),dokon_id=store_id)
+    # Narxni topish: avval dokon maxsus narxi, keyin dist narxi, keyin umumiy
+    pid = p.get("id", 0)
+    price, _ = get_price(pid, dist_id=str(uid), dokon_id=store_id)
+    if price == 0:
+        price, _ = get_price(pid, dist_id=str(uid))
+    if price == 0:
+        price, _ = get_price(pid)
     jami=qty*price; qarz=max(0.0,jami-naqd); top_id=make_op_id("T")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     db_append("Topshirish",[now_str(),str(uid),store_name,store_id,p[la],qty,p["unit"],price,jami,pay_type,naqd,qarz,"tasdiqlangan",top_id])
