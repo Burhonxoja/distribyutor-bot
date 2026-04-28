@@ -1480,7 +1480,14 @@ async def _show_qarzdorlar(upd,ctx):
 
 async def _show_buyurtmalar(upd,ctx):
     la=lg(ctx); uid=str(upd.effective_user.id)
-    orders=[r for r in db_all("Buyurtmalar") if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="Yangi"]
+    # Distribyutorning o'z do'konlari orqali kelgan zakazlarni ham olish
+    my_stores = get_stores(dist_id=uid)
+    my_store_ids = set(str(s.get("ID","")) for s in my_stores)
+    all_orders = db_all("Buyurtmalar")
+    orders = [r for r in all_orders if (
+        str(r.get("Dist_ID",""))==uid or
+        str(r.get("Dokon_ID","")) in my_store_ids
+    ) and r.get("Status","")=="Yangi"]
     if not orders:
         await upd.message.reply_text("📋 Yangi zakaz yo'q" if la=="uz" else "📋 Новых заказов нет")
         return
@@ -1547,10 +1554,13 @@ async def _show_my_stores(upd,ctx):
             f"📍 <b>Manzil:</b> {s.get('Adres','—')}\n"
             f"🏢 <b>MCHJ:</b> {mchj}\n"
             f"📞 <b>Tel 1:</b> {s.get('Tel1','—')}\n"
-            f"📞 <b>Tel 2:</b> {tel2}\n"
-            f"✏️ /dokon_edit_{dokon_id_s}"
+            f"📞 <b>Tel 2:</b> {tel2}"
         )
-        await upd.message.reply_text(card, parse_mode="HTML")
+        # Inline button - tahrirlash uchun
+        inline_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Ma'lumotlarni o'zgartirish", callback_data=f"dokon_edit_{dokon_id_s}")
+        ]])
+        await upd.message.reply_text(card, parse_mode="HTML", reply_markup=inline_kb)
     # Oxirida buyurtma va qo'shish tugmalari
     # Do'kon nomlarini tugma sifatida qo'shish (zakaz berish uchun)
     store_btns = [[s.get("Nomi","")] for s in stores if s.get("Nomi","")]
@@ -1627,26 +1637,37 @@ async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         st = get_ombor(uid)
         prods = get_products()
-        prod_units = {p["uz"]: p["unit"] for p in prods}
-        prod_units.update({p["ru"]: p["unit"] for p in prods})
-        prod_ids = {p["uz"]: p["id"] for p in prods}
-        prod_ids.update({p["ru"]: p["id"] for p in prods})
+        # Case-insensitive lookup
+        prod_map = {}
+        for p in prods:
+            prod_map[p["uz"].lower()] = p
+            prod_map[p["ru"].lower()] = p
+
         lines=["📦 Ombor:","━━━━━━━━━━━━━━━━"]
         total_sotuv=0; total_tannarx=0
         for k,v in st.items():
             if v<=0.001: continue
-            unit = prod_units.get(k,"")
-            pid  = prod_ids.get(k,0)
-            narx, tannarx = get_price(pid, dist_id=uid) if pid else (0,0)
+            # Mahsulotni topish (katta/kichik harf farqsiz)
+            p_obj = prod_map.get(k.lower())
+            if p_obj:
+                pid  = p_obj["id"]
+                unit = p_obj["unit"]
+                # Avval distribyutor narxi, bo'lmasa umumiy narx
+                narx, tannarx = get_price(pid, dist_id=uid)
+                if narx == 0:
+                    narx, tannarx = get_price(pid)
+            else:
+                unit = "kg"; narx = 0; tannarx = 0
             sotuv_s   = v * narx
             tannarx_s = v * tannarx
             foyda_s   = sotuv_s - tannarx_s
             total_sotuv   += sotuv_s
             total_tannarx += tannarx_s
             qty_str = format_qty(v, unit, prod_name=k, topshirish=True)
+            narx_str = f"{narx:,.0f}" if narx else "belgilanmagan"
             lines.append(
                 f"• <b>{k}</b>: {qty_str}\n"
-                f"  💰 Narx: {narx:,.0f} | Sotuv: {sotuv_s:,.0f}\n"
+                f"  💰 Narx: {narx_str} | Sotuv: {sotuv_s:,.0f}\n"
                 f"  📉 Tannarx: {tannarx_s:,.0f} | Foyda: {foyda_s:,.0f}")
         if len(lines)==2:
             lines.append("Ombor bo'sh!" if la=="uz" else "Склад пуст!")
@@ -1659,7 +1680,9 @@ async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"  📉 Tannarx: {total_tannarx:,.0f}\n"
                 f"  ✅ Foyda: {total_foyda:,.0f} so'm")
         await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
-    except Exception as e: await upd.message.reply_text(f"Xatolik: {e}")
+    except Exception as e:
+        logger.error(f"stock: {e}")
+        await upd.message.reply_text(f"Xatolik: {e}")
 
 async def marshrut_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=upd.effective_user.id
@@ -2087,10 +2110,12 @@ async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         qty_str=f"{qty:.3f} {unit}" if unit not in ("dona",) else f"{int(round(qty))} {unit}"
         birlik=unit
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
+    dist_id=str(store.get("Dist_ID","")) or str(uid)  # Do'konning distribyutori
     zakaz_id=make_op_id("Z")
-    # Brinza donalab saqlanadi
-    save_qty = qty  # dona soni
-    db_append("Buyurtmalar",[now_str(),store_id,store_name,str(uid),prod_name,save_qty,"Yangi","",zakaz_id])
+    # Saqlanadi: Sana, Dokon_ID, Dokon, Dist_ID, Mahsulot, Miqdor, Status, Izoh, Zakaz_ID
+    db_append("Buyurtmalar",[now_str(),store_id,store_name,dist_id,prod_name,qty,"Yangi","",zakaz_id])
+    logger.info(f"Zakaz saqlandi: dokon={store_name} dist_id={dist_id} prod={prod_name} qty={qty}")
+    qty_str = format_qty(qty, birlik, prod_name=prod_name, topshirish=False)
     await upd.message.reply_text(
         f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}" if la=="uz"
         else f"✅ Заказ добавлен!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}")
