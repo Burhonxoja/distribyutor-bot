@@ -43,7 +43,7 @@ ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") 
     ST_ADM_DOKON_NAME, ST_ADM_DOKON_ADDR, ST_ADM_DOKON_DIST,
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
-) = range(41)
+) = range(40)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
@@ -75,13 +75,21 @@ def get_products():
     return DEFAULT_PRODUCTS
 
 def fmt_qty(qty, unit, prod_name="", topshirish=False):
-    """Miqdorni chiroyli formatlash"""
+    """
+    Miqdorni formatlash:
+    Brinza: topshirish=True → kg, topshirish=False → dona
+    Boshqalar: unit bo'yicha
+    """
     def fmt_float(v, u):
         if v == int(v): return f"{int(v)} {u}"
         s = f"{v:.3f}".rstrip('0').rstrip('.')
         return f"{s} {u}"
+
     if is_brinza(prod_name):
-        return fmt_float(float(qty), "kg") if topshirish else f"{int(round(qty))} dona"
+        if topshirish:
+            return fmt_float(float(qty), "kg")  # do'konga berishda kg
+        else:
+            return f"{int(round(qty))} dona"    # zavod, zakaz, omborda dona
     elif unit == "dona":
         return f"{int(round(qty))} dona"
     elif unit == "kg":   return fmt_float(float(qty), "kg")
@@ -89,7 +97,8 @@ def fmt_qty(qty, unit, prod_name="", topshirish=False):
     else:
         v = float(qty)
         if v == int(v): return f"{int(v)} {unit}"
-        return f"{v:.3f} {unit}".rstrip('0 ').rstrip('.')
+        s = f"{v:.3f}".rstrip('0').rstrip('.')
+        return f"{s} {unit}"
 
 # ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
 SHEET_HEADERS = {
@@ -259,17 +268,28 @@ def get_debt(dokon_id):
     except Exception: return 0.0
 
 def get_ombor(dist_id):
+    """
+    Brinza: dona saqlanadi (zavod dona, topshirish kg -> dona ga o'tkazilmaydi)
+    Boshqalar: birlik bo'yicha
+    """
     uid = str(dist_id)
     st = {}
+    # Tasdiqlangan va kutilmoqda ham (real vaqt uchun)
     for r in db_all("Qabul"):
-        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
+        if str(r.get("Dist_ID",""))!=uid: continue
+        if r.get("Status","") not in ("tasdiqlangan","kutilmoqda"): continue
+        k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
     for r in db_all("Topshirish"):
-        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k=r.get("Mahsulot",""); st[k]=st.get(k,0)-float(r.get("Miqdor",0) or 0)
+        if str(r.get("Dist_ID",""))!=uid: continue
+        if r.get("Status","") != "tasdiqlangan": continue
+        k=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
+        # Brinza topshirishda kg, ombordan dona ayirish
+        # 1 dona ~ 1 kg deb hisoblaymiz (admin sozlashda)
+        st[k]=st.get(k,0)-qty
     for r in db_all("Vozvrat"):
-        if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
+        if str(r.get("Dist_ID",""))!=uid: continue
+        if r.get("Status","") != "tasdiqlangan": continue
+        k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
     return {k:v for k,v in st.items() if v>0.001}
 
 def parse_num(text):
@@ -327,80 +347,64 @@ def set_setting(key, val):
             w.update_cell(i+2,2,str(val)); w.update_cell(i+2,3,now_str()); return
     w.append_row([key,str(val),now_str()])
 
-def namoz_on(): return get_setting("namoz","1")=="1"
 
 # ── MOTIVATSIYA ───────────────────────────────────────────────────────────────
 MOTIVATSIYA = [
-    "💪 Barakalla! Siz bugun ham ajoyib ish qildingiz. Oilangiz sizni kutmoqda!",
-    "🌟 Zo'r! Har bir qadamingiz oilangiz farovonligi uchun. Muvaffaqiyat sizniki!",
-    "🏆 Ajoyib! Halol mehnat — eng ulug' boylik. Uyga sog'-salomat boring!",
-    "☀️ Kun yaxshi ketmoqda! Sog'ligingizni asrang, oilangiz siz bilan faxrlanadi.",
-    "🤲 Barakali ish qildingiz! Alloh rizqingizni keng qilsin. Eson-omon boring!",
-    "💫 Zo'r natija! Ishingiz barakali bo'lsin. Oilangiz siz bilan xursand.",
-    "🌈 Mukammal! Bugungi mehnat ertangi baxtingiz. Xavfsiz harakatlaning!",
-    "🎯 Maqsadga yana bir qadam! Oilangiz siz bilan g'ururlanadi!",
-    "🌺 Halol rizq topmoqdasiz — bu ibodatlardan biri. Alloh qo'llasin!",
-    "⭐ Siz ajoyib distribyutorsiz! Eson-omon qaytishingizni tilaymiz.",
-    "🦁 Kuchli odam! Bugun ham muvaffaqiyatli ishlading. Uyga boring!",
-    "🌿 Har bir tomchi terni Alloh ko'radi. Halol mehnat!",
-    "🎊 Harakatingiz meva bermoqda! Uyga borib dam oling.",
-    "💎 Qimmatli insonlar shunday ishlaydi — sidqidil. Barakalla!",
-    "🚀 Olg'a! Bugun ham ajoyib. Xavfsiz va sog' qaytishingizni tilaymiz.",
-    "🌙 Alloh rizqingizni ziyoda qilsin. Oilangizga tez yetib boring!",
-    "🏅 Bugun ham g'alaba! Eson-omon uyga boring!",
-    "✨ Harakatingiz baraka topsin. Oila — eng ulug' ne'mat!",
-    "🌻 Sog'liqni asrang, baxt oilada. Alloh asrasin!",
-    "💪 Mashaqqat — muvaffaqiyat onasi. Uyga sog' boring!",
-    "🎵 Hayot go'zal, oila — eng katta boylik! Sog'-omon boring!",
-    "🌍 Halol mehnat Vatanga ham xizmat. Barakalla!",
-    "🦅 Baland parvoz qilmoqdasiz! Uyga borib oilangiz bilan bo'ling.",
-    "🌊 Har bir to'lqin qirg'oqqa yetadi — siz ham maqsadga!",
-    "🎁 Bugun qilgan mehnatiz ertaga farzandlaringizga sovg'a.",
-    "🏡 Uyingiz — jannatning bir bo'lagi. Tez qaytib oilangiz bilan bo'ling!",
-    "💚 Sog'lik — eng katta ne'mat. Ehtiyotkorlik bilan harakatlaning!",
-    "🕊️ Tinchlik va barakot sizniki bo'lsin.",
-    "🌠 Yulduzlar mehnatkesha odamlar uchun porlaydi. Eson-omon boring!",
-    "🤝 Ishonchli va halol ish — eng yaxshi mulk.",
-    "🌸 Bahordek yangi kuch bilan ishlayapsiz!",
-    "🦋 O'zgarish va rivojlanish sizda.",
-    "🎯 Aniq maqsad — katta g'alaba. Bugun ham maqsadingizga yetdingiz!",
-    "💡 Aqlli va mehnatli odam — ikki dunyoda baxtli.",
-    "🏔️ Tog' kabi mustahkam, daryo kabi tinim bilmas!",
-    "🌴 Palma shamolda egiladi, lekin sinmaydi — siz ham!",
-    "🦊 Chaqqon va aqlli! Oilangizni ko'rishga shoshing!",
-    "🌺 Gul kabi inson — boshqalarga xursandchilik ulashadi.",
-    "⚡ Energiyangiz baland! Uyga ham kiring shunday!",
-    "🎋 Pishiq va ishonchli inson. Eson-omon qaytishinggizni tilaymiz!",
-    "🏄 To'lqinlarni yengib o'tmoqdasiz!",
-    "🌟 Har kuni yangi imkoniyat. Siz uni ishlatdingiz!",
-    "🎶 Hayot musiqa, mehnat ohang. Eson-omon boring!",
-    "🦉 Dono va tajribali. Alloh oilangizni asrasin!",
-    "🍀 Baxt to'rt bargli yoʻngichqaday — siz uni topmoqdasiz!",
-    "🌊 Mehnatinggiz g'oyat qadrli. Eson-omon boring!",
-    "🎠 Bugun qilgan ishingiz ertaga sababli bo'ladi.",
-    "🏹 Maqsadga to'g'ri! Bugun ham a'lo natija!",
-    "🌈 Yomg'irdan keyin kamalak — mashaqqatdan keyin baxt!",
-    "💝 Oilangizga eng yaxshi sovg'a — siz sog'-salomat uyga qaytishingiz!",
+    "🔥 Barakalla! Tovar qabul qilindi. Endi sotuv vaqti — har bir do'kon sizni kutmoqda!",
+    "💪 Zo'r! Omboringiz to'ldi, endi harakatga vaqt. Bugun qancha do'konni aylanasiz?",
+    "🚀 Ajoyib! Tovar qo'lda — bu muvaffaqiyatning yarmi. Ikkinchi yarmi sotuv!",
+    "⚡ Yangi tovar — yangi imkoniyat! Distribyutor sifatida siz bozorni egallab oling!",
+    "🏆 Professional distribyutor shunday ishlaydi: tez qabul, tez yetkazib berish. Oldinga!",
+    "📈 Har bir tovar yetkazib berish — daromadingizni oshiradi. Ko'proq harakating — ko'proq foyda!",
+    "💡 Aqlli distribyutor: bugun qabul qildi — bugun yetkazdi. Tezlik = pul!",
+    "🎯 Maqsad aniq: do'konlar sizi kutmoqda. Vaqtni yo'qotmang — yo'lga chiqing!",
+    "🦁 Kuchli distribyutor omborni to'ldiradi, undan ham tezroq bo'shatadi!",
+    "🌟 Har bir kg tovar — bu kelajakdagi foyda. Bugun tez harakat = ertaga ko'p daromad!",
+    "🔑 Muvaffaqiyatning siri: doimiy harakat. Siz bugun ham shu yo'ldasiz. Zo'r!",
+    "📦 Tovar qabul qilindi — bu boshlanishi! Asosiy ish oldinda: do'konlarga yetkazish!",
+    "💰 Har bir yetkazib berish — bu sizning daromadingiz. Ko'proq harakat = ko'proq pul!",
+    "🏅 Professional ish — tez va sifatli yetkazib berish. Siz bugun ham shu standartni saqladingiz!",
+    "🎖️ Eng yaxshi distribyutor — eng tez distribyutor. Raqobatdan oldinda boring!",
+    "⚙️ Sistem ishlayapti: tovar qabul — yetkazib berish — pul. Sizning biznesingiz aylanmoqda!",
+    "🌍 Har kuni yangi do'konlar, yangi mijozlar, yangi imkoniyatlar. Siz ularni qo'lga kiring!",
+    "🚀 Bugun qabul qilgan tovaringiz ertaga foyda bo'lsin — bugundan harakatga!",
+    "💥 Energiya baland — natija yuqori! Do'konlarga chiqish vaqti keldi!",
+    "🎯 Distribyutor muvaffaqiyatining formulasi: tez qabul + tez yetkazish = ko'p daromad!",
+    "🏃 Vaqt — pul! Tovar omborga keldi, endi uni do'konlarga olib boring!",
+    "🌱 Har bir yaxshi yetkazib berish — bu doimiy mijoz. Bugun yaxshi xizmat = ertaga sadoqatli do'kon!",
+    "💎 Sifatli va o'z vaqtida yetkazish — bu sizning obro'ingiz. Obro' = ko'proq buyurtma!",
+    "🔥 Omboringiz to'ldi! Bu quvonch emas — bu mas'uliyat. Do'konlar kutmoqda!",
+    "📊 Har bir tovar yetkazib berish — bu statistikangizni yaxshilaydi. Oldinga harakating davom etsin!",
+    "⭐ A'lo distribyutor: har doim o'z vaqtida, har doim sifatli. Siz shu standartni ushlab turasiz!",
+    "🎪 Bozor sizniki — uni egallab oling! Bugun qabul qilgan tovaringizni tezda tarqating!",
+    "💡 Bir kunda ko'proq do'kon = ko'proq sotish = ko'proq foyda. Formula oddiy!",
+    "🌊 Tovar oqimi to'xtamassin! Qabul-yetkazish ritmini saqlang!",
+    "🦅 Baland ko'tariling! Har bir tovar qabuli — yangi cho'qqiga qadam!",
+    "🔑 Bugun qilingan mehnat — ertangi muvaffaqiyatning kaliti. Omboringiz to'ldi, ish boshlandi!",
+    "⚡ Siz tezkor distribyutorsiz! Tovar qabul qilindi — endi tez harakatga!",
+    "🎯 Aniq maqsad: bugun ombordan hamma tovarni do'konlarga yetkazish. Muvaffaqiyat sizniki!",
+    "🏆 Champion distribyutor: tovar oladi va tezda tarqatadi. Siz champion!",
+    "💰 Har bir soat — bu pul! Tovar omborga keldi, vaqt yo'qotmang!",
+    "🌟 Omboringiz — bu sizning kapitalingiz. Uni aylantirishni to'xtamang!",
+    "🔥 Kuchingiz bor, tezligingiz bor, tovaringiz bor — endi faqat harakat qoldi!",
+    "📦 Tovar qabul = 50% ish bajarildi. Qolgan 50% — yetkazib berish! Oldinga!",
+    "💪 Har bir kg yetkazilgan tovar — bu sizning mehnatka olingan moyan. Ko'proq harakat!",
+    "🚀 Distribyutor raketa kabi bo'lishi kerak: tez va to'g'ri nishonga. Siz shundasiz!",
+    "🌍 Katta distribyutorlar katta harakat qiladi. Siz bugun ham katta ish qildingiz!",
+    "⚙️ Biznes mashinasi ishlayapti: siz uning eng muhim qismi — distribyutorsiz!",
+    "🎖️ Har bir muvaffaqiyatli yetkazib berish — bu sizning reputatsiyangizni mustahkamlaydi!",
+    "💡 Strategik fikrla: bugun ko'proq do'konga borsang, ertaga ko'proq zakaz olasan!",
+    "🏅 Siz professional! Tovar qabul qilish — bu sizning ishi. Endi yetkazib berish ham!",
+    "🔥 Omboringiz boy — do'konlarga xabar bering! Ular sizni kutmoqda!",
+    "⭐ Yuqori samaradorlik: kam vaqtda ko'p do'konga yetkazish. Bu sizning kuchingiz!",
+    "🌱 Har bir yaxshi xizmat — yangi imkoniyat. Bugun yaxshi ish = ertaga ko'proq zakaz!",
+    "🎯 Distribyutor shiori: tovar olaman, tez tarqataman, ko'p pul topaman!",
+    "💰 Bugun qabul qilgan tovaringiz — bu ertangi foyda. Tez harakat = ko'p foyda!",
 ]
 
 def get_motiv(): return random.choice(MOTIVATSIYA)
 
 # ── NAMOZ VAQTLARI (TOSHKENT) ─────────────────────────────────────────────────
-NAMOZ = {
-    1:  [(6,25),(8,5),(12,50),(15,35),(17,40),(19,25)],
-    2:  [(5,55),(7,45),(12,55),(15,55),(18,5),(19,50)],
-    3:  [(5,15),(7,10),(13,0),(16,15),(18,30),(20,15)],
-    4:  [(4,25),(6,25),(13,5),(16,40),(19,0),(20,45)],
-    5:  [(3,45),(5,50),(13,10),(17,5),(19,30),(21,20)],
-    6:  [(3,20),(5,30),(13,15),(17,20),(20,0),(21,50)],
-    7:  [(3,30),(5,40),(13,15),(17,20),(20,5),(21,55)],
-    8:  [(4,0),(6,5),(13,10),(17,0),(19,30),(21,20)],
-    9:  [(4,35),(6,30),(13,0),(16,30),(18,55),(20,40)],
-    10: [(5,10),(7,0),(12,50),(16,0),(18,15),(19,55)],
-    11: [(5,45),(7,30),(12,45),(15,30),(17,35),(19,15)],
-    12: [(6,15),(8,0),(12,45),(15,15),(17,15),(19,0)],
-}
-NAMOZ_NOMLARI = ["Bomdod","Quyosh","Peshin","Asr","Shom","Xufton"]
 
 
 # ── INLINE KEYBOARD YARATUVCHILAR ─────────────────────────────────────────────
@@ -729,42 +733,52 @@ async def zavod_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     price, _ = get_price(pid, dist_id=str(uid))
     if price == 0: price, _ = get_price(pid)
     ctx.user_data["zav_price"] = price
+    brinza = is_brinza(p[la_])
+    hint = "Miqdorni kiriting (dona, butun son):" if brinza else "Miqdorni kiriting (masalan: 5 yoki 5.5):"
     await q.edit_message_text(
         f"📥 <b>{p[la_]}</b>\n"
-        f"💰 Narx: {price:,.0f} so'm/{p['unit']}\n\n"
-        f"Miqdorni kiriting (masalan: 5 yoki 5.5):" if la_=="uz"
-        else f"📥 <b>{p[la_]}</b>\n"
-        f"💰 Цена: {price:,.0f}/{p['unit']}\n\nВведите количество:",
+        f"💰 Narx: {price:,.0f} so'm/{p['unit']}\n"
+        f"{'🧀 Brinza: dona bilan hisob!' if brinza else ''}\n\n{hint}",
         reply_markup=back_ik("m:qabul"), parse_mode="HTML")
     return ST_ZAVOD_QTY
 
 async def zavod_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la_ = la(ctx); uid = upd.effective_user.id
-    qty = parse_weight(upd.message.text)
-    if qty <= 0:
-        await upd.message.reply_text("❌ Noto'g'ri miqdor. Qaytadan kiriting:")
-        return ST_ZAVOD_QTY
     p = ctx.user_data.get("zav_p",{}); price = ctx.user_data.get("zav_price",0)
+    brinza = is_brinza(p.get(la_,""))
+    if brinza:
+        try: qty = int(float(upd.message.text.strip().replace(",",".")))
+        except: qty = 0
+        if qty <= 0:
+            await upd.message.reply_text("❌ Butun son kiriting (dona):"); return ST_ZAVOD_QTY
+    else:
+        qty = parse_weight(upd.message.text)
+        if qty <= 0:
+            await upd.message.reply_text("❌ Noto'g'ri miqdor:"); return ST_ZAVOD_QTY
     jami = qty * price
     qid = make_id("Q")
     u = get_user(uid)
     dn = f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     sid = u.get("Short_ID","?") if u else "ADMIN"
-    db_append("Qabul",[now_str(),str(uid),dn,p[la_],qty,p["unit"],price,jami,"kutilmoqda",qid])
+    unit_save = p.get("unit","")
+    db_append("Qabul",[now_str(),str(uid),dn,p[la_],qty,unit_save,price,jami,"kutilmoqda",qid])
+    qty_str = fmt_qty(qty, unit_save, p[la_], topshirish=False)
     for adm in ADMIN_IDS:
         try:
             await ctx.bot.send_message(adm,
                 f"⏳ <b>ZAVOD SO'ROVI</b>\n"
                 f"Dist: {dn} (ID:{sid})\n"
-                f"{p[la_]}: {fmt_qty(qty,p['unit'],p[la_],True)}\n"
+                f"{p[la_]}: {qty_str}\n"
                 f"Narx: {price:,.0f}\nJami: {jami:,.0f}\nRef: {qid}\n\n"
                 f"✅ /zok_{qid}\n❌ /zrad_{qid}", parse_mode="HTML")
         except Exception as e: logger.error(f"zavod admin: {e}")
     await upd.message.reply_text(
-        "⏳ So'rov adminga yuborildi. Kuting..." if la_=="uz"
-        else "⏳ Запрос отправлен. Ожидайте...",
+        f"⏳ So'rov yuborildi.\n{p[la_]}: {qty_str}" if la_=="uz"
+        else f"⏳ Запрос отправлен.\n{p[la_]}: {qty_str}",
         reply_markup=main_kb(uid,la_))
     return ST_MAIN
+
+
 
 async def zok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.effective_user.id not in ADMIN_IDS: return
@@ -835,7 +849,7 @@ async def top_store_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not store: return ST_MAIN
     ctx.user_data["top_store"] = store
 
-    # Zakazlarni ko'rsatish
+    # Zakazlarni ko'rsatish (faqat ma'lumot uchun, tasdiqlash shart emas)
     orders = [r for r in db_all("Buyurtmalar")
               if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="Yangi"]
     ctx.user_data["store_orders"] = orders
@@ -847,7 +861,10 @@ async def top_store_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         info += "\n📋 <b>Aktiv zakazlar:</b>\n"
         for r in orders:
             pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
-            info += f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}\n"
+            # Brinza zakaz dona, boshqalar dona
+            if is_brinza(pn): qty_str=f"{int(round(qty))} dona"
+            else: qty_str=fmt_qty(qty,'dona',pn,False)
+            info += f"  • {pn}: {qty_str}\n"
     info += "\nMahsulotni tanlang:"
 
     # Faqat ombordagi mahsulotlar
@@ -1133,75 +1150,32 @@ async def buyurtma_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📋 Yangi buyurtma yo'q." if la_=="uz" else "📋 Новых заказов нет.",
             back_ik("m:main"))
         return ST_MAIN
-    by_dokon={}
-    jami_prod={}
+    by_dokon={}; jami_prod={}
     for r in orders:
         dk=r.get("Dokon","?"); by_dokon.setdefault(dk,[]).append(r)
         pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
         jami_prod[pn]=jami_prod.get(pn,0)+qty
     lines=[f"📋 <b>Buyurtmalar: {len(orders)} ta</b>","━━━━━━━━━━━━━━━━"]
     for dokon,recs in by_dokon.items():
-        lines.append(f"🏪 <b>{dokon}:</b>")
+        lines.append(f"\n🏪 <b>{dokon}:</b>")
         for r in recs:
             pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
-            zid=r.get("Zakaz_ID","")
-            lines.append(f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}")
-        lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━")
+            # Brinza - dona, boshqalar - o'z birligi
+            if is_brinza(pn): qty_str=f"{int(round(qty))} dona"
+            else: qty_str=fmt_qty(qty, r.get("Birlik","") or "dona", pn, False)
+            lines.append(f"  • {pn}: {qty_str}")
+    lines.append("\n━━━━━━━━━━━━━━━━")
     lines.append("📊 <b>Jami kerak:</b>")
     for pn,qty in jami_prod.items():
-        lines.append(f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}")
-    lines.append("\n✅/❌ qabul qilish uchun buyurtmani tanlang:")
-    # Buyurtmalar inline
-    rows=[]
-    for r in orders:
-        zid=r.get("Zakaz_ID",""); pn=r.get("Mahsulot",""); dk=r.get("Dokon","")
-        qty=float(r.get("Miqdor",0) or 0)
-        rows.append([(f"✅ {dk} – {pn} {fmt_qty(qty,'dona',pn,False)}", f"zqabul:{zid}")])
-        rows.append([(f"❌ Rad: {dk} – {pn}", f"zrad:{zid}")])
-    rows.append([("🔙 Orqaga","m:main")])
-    await edit_or_send(upd,ctx,"\n".join(lines),ikr(*rows),parse_mode="HTML")
+        if is_brinza(pn): lines.append(f"  • {pn}: {int(round(qty))} dona")
+        else: lines.append(f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}")
+    await edit_or_send(upd,ctx,"\n".join(lines),back_ik("m:main"),parse_mode="HTML")
     return ST_MAIN
 
-async def zakaz_action_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query; await answer(q); la_ = la(ctx)
-    data = q.data  # "zqabul:ID" or "zrad:ID"
-    action, zid = data.split(":",1)
-    ctx.user_data["zak_id"] = zid
-    ctx.user_data["zak_action"] = "qabul" if action=="zqabul" else "rad"
-    await q.edit_message_text(
-        "📝 Izoh yozing (yoki o'tkazib yuborish):" if la_=="uz"
-        else "📝 Напишите комментарий (или пропустите):",
-        reply_markup=ikr([("⏭ O'tkazib yuborish" if la_=="uz" else "⏭ Пропустить","zak_skip")]))
-    return ST_ZAKAZ_COMMENT
 
-async def zakaz_skip_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query; await answer(q)
-    ctx.user_data["zak_izoh"] = ""
-    return await zakaz_save(upd, ctx)
 
-async def zakaz_comment(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["zak_izoh"] = upd.message.text.strip()
-    return await zakaz_save(upd, ctx)
 
-async def zakaz_save(upd, ctx):
-    la_ = la(ctx); uid = str(upd.effective_user.id)
-    zid=ctx.user_data.get("zak_id",""); action=ctx.user_data.get("zak_action","")
-    izoh=ctx.user_data.get("zak_izoh","") or "-"
-    status="Qabul_qilindi" if action=="qabul" else "Rad_etildi"
-    db_update("Buyurtmalar","Zakaz_ID",zid,"Status",status)
-    db_update("Buyurtmalar","Zakaz_ID",zid,"Izoh",izoh)
-    res="✅ Qabul" if action=="qabul" else "❌ Rad"
-    msg=f"{res} qilindi\nIzoh: {izoh}" if la_=="uz" else f"{res}\nКомментарий: {izoh}"
-    if upd.callback_query: await upd.callback_query.edit_message_text(msg)
-    else: await upd.message.reply_text(msg)
-    sid=get_sid(upd.effective_user.id)
-    await ctx.bot.send_message(upd.effective_user.id,
-        f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
-        reply_markup=main_kb(upd.effective_user.id,la_), parse_mode="HTML")
-    return ST_MAIN
 
-# ── TO'LOV ────────────────────────────────────────────────────────────────────
 async def tolov_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la_ = la(ctx); uid = str(upd.effective_user.id)
     stores = get_stores(dist_id=uid)
@@ -1274,9 +1248,11 @@ async def ombor_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pid=p_obj["id"] if p_obj else 0
         narx,tn=get_price(pid,dist_id=uid)
         if narx==0: narx,tn=get_price(pid)
+        # Omborda brinza dona ko'rsatiladi (topshirish=False)
+        qty_str=fmt_qty(v,unit,k,topshirish=False)
+        # Narx hisoblash: brinza kg narxi bo'yicha (sotuv kg da)
         sotuv=v*narx; tan=v*tn; foyda=sotuv-tan
         total_sotuv+=sotuv; total_tn+=tan
-        qty_str=fmt_qty(v,unit,k,True)
         narx_str=f"{narx:,.0f}" if narx else "belgilanmagan"
         lines.append(f"• <b>{k}</b>: {qty_str}\n  💰 {narx_str} → {sotuv:,.0f} | Foyda: {foyda:,.0f}")
     if len(lines)==2: lines.append("Ombor bo'sh!")
@@ -1647,7 +1623,6 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [("🏪 Do'konlar ro'yxati","adm:stores"),("🚚 Distribyutorlar","adm:dists")],
             [("📦 Zavod so'rovlari","adm:zavod")],
             [("📢 Xabar yuborish","adm:bc")],
-            [("🕌 Namoz: "+(("✅ Yoq" if namoz_on() else "❌ O'chiq")),"adm:namoz")],
             [("🔙 Orqaga","m:main")]
         ))
     return ST_MAIN
@@ -1658,12 +1633,6 @@ async def admin_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if uid not in ADMIN_IDS: return ST_MAIN
     data = q.data.split(":")[1]
 
-    if data == "namoz":
-        new_val = "0" if namoz_on() else "1"
-        set_setting("namoz", new_val)
-        status = "✅ Yoqildi" if new_val=="1" else "❌ O'chirildi"
-        await q.answer(f"Namoz eslatmasi: {status}")
-        return await admin_menu(upd, ctx)
 
     if data == "prod":
         await q.edit_message_text("➕ Mahsulot nomi (o'zbekcha):",reply_markup=back_ik("m:admin"))
@@ -1926,38 +1895,7 @@ async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
             except Exception as e: logger.error(f"24h: {e}")
     except Exception as e: logger.error(f"tovar_24h: {e}")
 
-async def namoz_eslatma(ctx: ContextTypes.DEFAULT_TYPE):
-    """Har 5 daqiqada: 30 daqiqa qolganida namoz eslatmasi"""
-    if not namoz_on(): return
-    try:
-        now=datetime.now(); oy=now.month
-        vaqtlar=NAMOZ.get(oy,NAMOZ[1])
-        target=None; nom=None
-        for i,(soat,daqiqa) in enumerate(vaqtlar):
-            ndt=now.replace(hour=soat,minute=daqiqa,second=0,microsecond=0)
-            diff=(ndt-now).total_seconds()/60
-            if 28<=diff<=32: target=ndt; nom=NAMOZ_NOMLARI[i]; break
-        if not nom: return
-        msg=(f"🕌 <b>{nom} vaqti yaqin!</b>\n"
-             f"⏰ {target.strftime('%H:%M')} (30 daqiqa qoldi)\n\n"
-             f"Namozni vaqtida o'qing! 🤲")
-        # Hammaga yuborish
-        users=db_all("Foydalanuvchilar"); sent=set()
-        for u in users:
-            if not is_approved(u.get("TG_ID","")): continue
-            try:
-                uid_int=int(u.get("TG_ID",0))
-                if uid_int in sent: continue
-                sent.add(uid_int)
-                await ctx.bot.send_message(uid_int,msg,parse_mode="HTML")
-            except Exception: pass
-        for adm in ADMIN_IDS:
-            if adm not in sent:
-                try: await ctx.bot.send_message(adm,msg,parse_mode="HTML")
-                except Exception: pass
-    except Exception as e: logger.error(f"namoz: {e}")
 
-# ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN: print("BOT_TOKEN yo'q!"); return
     app = Application.builder().token(BOT_TOKEN).build()
@@ -1966,7 +1904,6 @@ def main():
     app.job_queue.run_daily(debt_reminder, time=dtime(9,0))
     app.job_queue.run_daily(auto_zakaz_reminder, time=dtime(20,0))
     app.job_queue.run_repeating(tovar_24h_reminder, interval=3600, first=60)
-    app.job_queue.run_repeating(namoz_eslatma, interval=300, first=30)
 
     txt  = filters.TEXT & ~filters.COMMAND
     photo_txt = (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
@@ -1995,8 +1932,7 @@ def main():
                 CallbackQueryHandler(top_photo_ocr_cb,pattern="^ocr_"),
                 CallbackQueryHandler(top_pay_cb,      pattern="^(pay:|voz:)"),
                 CallbackQueryHandler(voz_prod_cb,     pattern="^voz_p:"),
-                CallbackQueryHandler(zakaz_action_cb, pattern="^(zqabul:|zrad:)"),
-                CallbackQueryHandler(zakaz_skip_cb,   pattern="^zak_skip$"),
+
                 CallbackQueryHandler(dokon_add_cb,    pattern="^dokon:add$"),
                 CallbackQueryHandler(dokon_zakaz_cb,  pattern="^dzak:"),
                 CallbackQueryHandler(zakaz_prod_cb,   pattern="^zprod:"),
@@ -2026,10 +1962,7 @@ def main():
             ST_TOP_NAQD:          [MessageHandler(txt, top_naqd)],
             ST_VOZ_PROD:          [CallbackQueryHandler(voz_prod_cb, pattern="^voz_p:")],
             ST_VOZ_QTY:           [MessageHandler(txt, voz_qty)],
-            ST_ZAKAZ_COMMENT:     [
-                MessageHandler(txt, zakaz_comment),
-                CallbackQueryHandler(zakaz_skip_cb, pattern="^zak_skip$"),
-            ],
+
             ST_DI_NAME:  [MessageHandler(txt, di_name)],
             ST_DI_ADDR:  [MessageHandler(txt, di_addr)],
             ST_DI_MCHJ:  [
