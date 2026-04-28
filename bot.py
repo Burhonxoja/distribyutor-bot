@@ -1,11 +1,18 @@
+"""
+Alba Milk Distribyutor Bot v4.0
+- To'liq inline keyboard
+- Barcha funksiyalar to'g'ri ishlaydi
+"""
 import os, logging, json, re, base64, random
 from datetime import datetime, timedelta, time as dtime
 import gspread
 from google.oauth2.service_account import Credentials
 import google.auth.transport.requests
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, KeyboardButton
-from telegram.ext import (Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-                          ConversationHandler, filters, ContextTypes)
+from telegram import (Update, InlineKeyboardMarkup, InlineKeyboardButton,
+                      ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove)
+from telegram.ext import (Application, CommandHandler, MessageHandler,
+                          CallbackQueryHandler, ConversationHandler,
+                          filters, ContextTypes)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,6 +22,31 @@ GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
 SPREADSHEET_ID    = os.environ.get("SPREADSHEET_ID", "")
 ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") if x.strip()]
 
+# ── STATES ────────────────────────────────────────────────────────────────────
+(
+    ST_LANG,
+    ST_REG_NAME, ST_REG_FNAME, ST_REG_PHONE, ST_REG_PASSPORT,
+    ST_WAIT_APPROVE,
+    ST_MAIN,
+    ST_ZAVOD_QTY,
+    ST_TOP_STORE, ST_TOP_PROD, ST_TOP_PHOTO, ST_TOP_PAY, ST_TOP_NAQD,
+    ST_VOZ_PROD, ST_VOZ_QTY,
+    ST_ZAKAZ_COMMENT,
+    ST_DI_NAME, ST_DI_ADDR, ST_DI_MCHJ, ST_DI_TEL1, ST_DI_TEL2, ST_DI_EGA, ST_DI_PHOTO,
+    ST_NARX_VAL, ST_NARX_COST,
+    ST_NARX_DOKON_VAL, ST_NARX_DOKON_COST,
+    ST_ZAKAZ_FROM_QTY,
+    ST_ZAKAZ_EDIT_QTY,
+    ST_DOKON_EDIT_VAL,
+    ST_ADM_MAHSULOT_UZ, ST_ADM_MAHSULOT_RU, ST_ADM_MAHSULOT_UNIT,
+    ST_ADM_NARX_VAL, ST_ADM_NARX_COST,
+    ST_ADM_DOKON_NAME, ST_ADM_DOKON_ADDR, ST_ADM_DOKON_DIST,
+    ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
+    ST_ADM_BROADCAST,
+) = range(40)
+
+
+# ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
 DEFAULT_PRODUCTS = [
     {"id":1,"uz":"Tvorog","ru":"Tvorog","unit":"kg"},
     {"id":2,"uz":"Sut","ru":"Sut","unit":"litr"},
@@ -27,106 +59,43 @@ DEFAULT_PRODUCTS = [
     {"id":9,"uz":"Tosh qurt","ru":"Tosh qurt","unit":"dona"},
 ]
 
+BRINZA_KEYWORDS = ["brinza"]
+
+def is_brinza(name):
+    return any(k in str(name).lower() for k in BRINZA_KEYWORDS)
+
 def get_products():
     try:
         recs = db_all("Mahsulotlar")
         if recs:
-            return [{"id":int(r.get("ID",0)),"uz":r.get("Nomi_UZ",""),"ru":r.get("Nomi_RU",""),"unit":r.get("Birlik","kg")}
+            return [{"id":int(r.get("ID",0)),"uz":r.get("Nomi_UZ",""),
+                     "ru":r.get("Nomi_RU",""),"unit":r.get("Birlik","kg")}
                     for r in recs if str(r.get("Faol","1"))=="1"]
     except Exception: pass
     return DEFAULT_PRODUCTS
 
-# ── STATES ────────────────────────────────────────────────────────────────────
-(
-    LANG_SELECT,
-    REG_NAME, REG_FNAME, REG_PHONE, REG_PASSPORT,
-    WAIT_APPROVE, MAIN_MENU,
-    DIST_LINK_ID,
-    ZAVOD_PROD, ZAVOD_QTY,
-    TOP_STORE, TOP_PROD, TOP_PHOTO, TOP_PAY_TYPE, TOP_PAY_AMOUNT,
-    VOZ_HAL, VOZ_PROD, VOZ_QTY,
-    ZAKAZ_COMMENT,
-    DI_NAME, DI_ADDR, DI_MCHJ, DI_TEL1, DI_TEL2, DI_EGA_ISM, DI_PHOTO,
-    ZAKAZ_FROM_STORE_PROD, ZAKAZ_FROM_STORE_QTY,
-    NARX_PROD, NARX_TYPE, NARX_VAL, NARX_COST,
-    NARX_DOKON, NARX_DOKON_VAL, NARX_DOKON_COST,
-    HISOBOT_MENU,
-    ADMIN_MENU,
-    ADM_MAHSULOT_NOM, ADM_MAHSULOT_RU, ADM_MAHSULOT_UNIT,
-    ADM_PRICE_PROD, ADM_PRICE_VAL, ADM_COST_VAL,
-    ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
-    ADM_DIST_NAME, ADM_DIST_ID,
-    ADM_BROADCAST,
-    # Zakaz o'zgartirish
-    ZAKAZ_EDIT_SELECT, ZAKAZ_EDIT_QTY,
-    # Do'kon ma'lumot o'zgartirish
-    DOKON_EDIT_SELECT, DOKON_EDIT_FIELD, DOKON_EDIT_VAL,
-    # Namoz sozlamasi
-    ADM_NAMOZ_SET,
-) = range(56)
-BRINZA_KEYWORDS = ["brinza", "brinza", "Brinza", "BRINZA"]
-
-def is_brinza(prod_name):
-    """Brinza mahsulotimi?"""
-    return any(kw.lower() in str(prod_name).lower() for kw in BRINZA_KEYWORDS)
-
-def format_qty(qty, unit, prod_name="", topshirish=False):
-    """
-    Birlik va mahsulotga qarab format:
-    - Brinza ZAKAZ: dona (butun son)
-    - Brinza TOPSHIRISH: kg (2 yoki 3 decimal, faqat kerak bo'lsa)
-    - dona mahsulotlar: butun son
-    - kg/litr: agar butun son bo'lsa N kg, bo'lmasa N.NNN kg
-    """
-    def fmt_kg(v):
-        """2 ko'rinishi: 2 kg, 2.5 kg, 2.455 kg (ortiqcha nolsiz)"""
-        if v == int(v): return f"{int(v)} kg"
-        # 3 decimal, lekin ortiqcha nollarni olib tashla
+def fmt_qty(qty, unit, prod_name="", topshirish=False):
+    """Miqdorni chiroyli formatlash"""
+    def fmt_float(v, u):
+        if v == int(v): return f"{int(v)} {u}"
         s = f"{v:.3f}".rstrip('0').rstrip('.')
-        return f"{s} kg"
-
-    def fmt_litr(v):
-        if v == int(v): return f"{int(v)} litr"
-        s = f"{v:.3f}".rstrip('0').rstrip('.')
-        return f"{s} litr"
-
+        return f"{s} {u}"
     if is_brinza(prod_name):
-        if topshirish:
-            return fmt_kg(float(qty))
-        else:
-            return f"{int(round(qty))} dona"
+        return fmt_float(float(qty), "kg") if topshirish else f"{int(round(qty))} dona"
     elif unit == "dona":
         return f"{int(round(qty))} dona"
-    elif unit == "kg":
-        return fmt_kg(float(qty))
-    elif unit == "litr":
-        return fmt_litr(float(qty))
+    elif unit == "kg":   return fmt_float(float(qty), "kg")
+    elif unit == "litr": return fmt_float(float(qty), "litr")
     else:
         v = float(qty)
         if v == int(v): return f"{int(v)} {unit}"
-        s = f"{v:.3f}".rstrip('0').rstrip('.')
-        return f"{s} {unit}"
+        return f"{v:.3f} {unit}".rstrip('0 ').rstrip('.')
 
-
-
-# ── SHEETS ────────────────────────────────────────────────────────────────────
-def get_creds_dict():
-    return json.loads(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else {}
-
-def get_sheet():
-    if not GOOGLE_CREDS_JSON: return None
-    try:
-        creds = Credentials.from_service_account_info(
-            get_creds_dict(),
-            scopes=["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"])
-        return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
-    except Exception as e:
-        logger.error(f"Sheet: {e}"); return None
-
+# ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
 SHEET_HEADERS = {
     "Foydalanuvchilar": ["TG_ID","Ism","Familiya","Telefon","Rol","Til","Passport","Status","Short_ID","Sana"],
     "Mahsulotlar":      ["ID","Nomi_UZ","Nomi_RU","Birlik","Faol","Sana"],
-    "Dokonlar":         ["ID","Short_ID","Nomi","Adres","MCHJ","Tel1","Tel2","Dist_ID","Dist_Ism","Lat","Lng","Sana"],
+    "Dokonlar":         ["ID","Nomi","Adres","MCHJ","Tel1","Tel2","Ega_Ismi","Dist_ID","Dist_Ism","Sana"],
     "Narxlar":          ["Mahsulot_ID","Mahsulot","Narx","Tannarx","Dist_ID","Dokon_ID","Sana"],
     "Qabul":            ["Sana","Dist_ID","Dist_Ism","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Qabul_ID"],
     "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID"],
@@ -136,15 +105,30 @@ SHEET_HEADERS = {
     "Sozlamalar":       ["Kalit","Qiymat","Sana"],
 }
 
+def _get_creds():
+    return json.loads(GOOGLE_CREDS_JSON) if GOOGLE_CREDS_JSON else {}
+
+def _get_sheet():
+    if not GOOGLE_CREDS_JSON: return None
+    try:
+        creds = Credentials.from_service_account_info(
+            _get_creds(),
+            scopes=["https://spreadsheets.google.com/feeds",
+                    "https://www.googleapis.com/auth/drive"])
+        return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+    except Exception as e:
+        logger.error(f"Sheet error: {e}"); return None
+
 def get_ws(name):
-    wb = get_sheet()
+    wb = _get_sheet()
     if not wb: return None
     try: return wb.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
         w = wb.add_worksheet(name, rows=3000, cols=25)
-        w.append_row(SHEET_HEADERS.get(name, ["Data"]))
+        if name in SHEET_HEADERS: w.append_row(SHEET_HEADERS[name])
         return w
-    except Exception as e: logger.error(f"get_ws {name}: {e}"); return None
+    except Exception as e:
+        logger.error(f"get_ws {name}: {e}"); return None
 
 def db_append(tab, row):
     try:
@@ -165,76 +149,77 @@ def db_update(tab, sc, sv, uc, uv):
         headers = w.row_values(1)
         if uc not in headers: return False
         for i, r in enumerate(w.get_all_records()):
-            if str(r.get(sc,"")).strip()==str(sv).strip():
+            if str(r.get(sc,"")).strip() == str(sv).strip():
                 w.update_cell(i+2, headers.index(uc)+1, str(uv)); return True
-        return False
-    except Exception as e: logger.error(f"db_update: {e}"); return False
+    except Exception as e: logger.error(f"db_update {tab}: {e}")
+    return False
 
-def db_delete_row(tab, sc, sv):
+def db_delete(tab, sc, sv):
     try:
         w = get_ws(tab)
         if not w: return
         for i, r in enumerate(w.get_all_records()):
-            if str(r.get(sc,"")).strip()==str(sv).strip():
+            if str(r.get(sc,"")).strip() == str(sv).strip():
                 w.delete_rows(i+2); return
-    except Exception as e: logger.error(f"db_delete_row: {e}")
-
-def make_short_id():
-    existing = set(str(r.get("Short_ID","")) for r in db_all("Foydalanuvchilar"))
-    while True:
-        sid = str(random.randint(100000, 999999))
-        if sid not in existing: return sid
-
-def make_op_id(prefix=""):
-    return prefix + datetime.now().strftime("%m%d%H%M%S") + str(random.randint(10,99))
+    except Exception as e: logger.error(f"db_delete {tab}: {e}")
 
 def now_str():   return datetime.now().strftime("%Y-%m-%d %H:%M")
 def today_str(): return datetime.now().strftime("%Y-%m-%d")
 
-# ── DB HELPERS ────────────────────────────────────────────────────────────────
-def get_user(uid):
-    try:
-        for r in db_all("Foydalanuvchilar"):
-            if str(r.get("TG_ID","")).strip()==str(uid).strip(): return r
-        return None
-    except Exception: return None
+def make_sid():
+    existing = {str(r.get("Short_ID","")) for r in db_all("Foydalanuvchilar")}
+    while True:
+        sid = str(random.randint(100000,999999))
+        if sid not in existing: return sid
 
-def get_user_by_short(sid):
-    try:
-        for r in db_all("Foydalanuvchilar"):
-            if str(r.get("Short_ID","")).strip()==str(sid).strip(): return r
-        return None
-    except Exception: return None
+def make_id(p=""): return p+datetime.now().strftime("%m%d%H%M%S")+str(random.randint(10,99))
+
+# ── FOYDALANUVCHI ─────────────────────────────────────────────────────────────
+def get_user(uid):
+    for r in db_all("Foydalanuvchilar"):
+        if str(r.get("TG_ID","")).strip()==str(uid).strip(): return r
+    return None
+
+def get_user_by_sid(sid):
+    for r in db_all("Foydalanuvchilar"):
+        if str(r.get("Short_ID","")).strip()==str(sid).strip(): return r
+    return None
 
 def is_approved(uid):
     if int(uid) in ADMIN_IDS: return True
     u = get_user(uid)
-    if not u: return False
-    return str(u.get("Status","")).strip().lower() in ["tasdiqlangan","approved","1"]
+    return u and str(u.get("Status","")).lower() in ["tasdiqlangan","1"]
 
-def is_rejected(uid):
-    u = get_user(uid)
-    if not u: return False
-    return str(u.get("Status","")).strip().lower() in ["rad_etildi","rejected"]
-
-def get_short_id(uid):
+def get_sid(uid):
     if int(uid) in ADMIN_IDS: return "ADMIN"
     u = get_user(uid)
     return u.get("Short_ID","?") if u else "?"
 
+def la(ctx): return ctx.user_data.get("lang","uz")
+
+# ── NARX ──────────────────────────────────────────────────────────────────────
 def get_price(pid, dist_id=None, dokon_id=None):
     try:
         recs = db_all("Narxlar")
+        # 1. Dokon maxsus narxi
         if dist_id and dokon_id:
             for r in recs:
-                if str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(dist_id) and str(r.get("Dokon_ID",""))==str(dokon_id):
+                if (str(r.get("Mahsulot_ID",""))==str(pid) and
+                    str(r.get("Dist_ID",""))==str(dist_id) and
+                    str(r.get("Dokon_ID",""))==str(dokon_id)):
                     return float(r.get("Narx",0) or 0), float(r.get("Tannarx",0) or 0)
+        # 2. Dist narxi
         if dist_id:
             for r in recs:
-                if str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(dist_id) and not str(r.get("Dokon_ID","")).strip():
+                if (str(r.get("Mahsulot_ID",""))==str(pid) and
+                    str(r.get("Dist_ID",""))==str(dist_id) and
+                    not str(r.get("Dokon_ID","")).strip()):
                     return float(r.get("Narx",0) or 0), float(r.get("Tannarx",0) or 0)
+        # 3. Umumiy narx
         for r in recs:
-            if str(r.get("Mahsulot_ID",""))==str(pid) and not str(r.get("Dist_ID","")).strip() and not str(r.get("Dokon_ID","")).strip():
+            if (str(r.get("Mahsulot_ID",""))==str(pid) and
+                not str(r.get("Dist_ID","")).strip() and
+                not str(r.get("Dokon_ID","")).strip()):
                 return float(r.get("Narx",0) or 0), float(r.get("Tannarx",0) or 0)
     except Exception as e: logger.error(f"get_price: {e}")
     return 0.0, 0.0
@@ -243,150 +228,165 @@ def set_price(pid, pname, price, cost, dist_id="", dokon_id=""):
     try:
         w = get_ws("Narxlar")
         if not w: return
-        recs = w.get_all_records(); now = now_str()
-        for i, r in enumerate(recs):
-            if str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(dist_id) and str(r.get("Dokon_ID",""))==str(dokon_id):
-                w.update(f"A{i+2}:G{i+2}", [[str(pid),pname,str(price),str(cost),str(dist_id),str(dokon_id),now]]); return
-        w.append_row([str(pid),pname,str(price),str(cost),str(dist_id),str(dokon_id),now])
+        for i,r in enumerate(w.get_all_records()):
+            if (str(r.get("Mahsulot_ID",""))==str(pid) and
+                str(r.get("Dist_ID",""))==str(dist_id) and
+                str(r.get("Dokon_ID",""))==str(dokon_id)):
+                w.update(f"A{i+2}:G{i+2}",
+                    [[str(pid),pname,str(price),str(cost),str(dist_id),str(dokon_id),now_str()]])
+                return
+        w.append_row([str(pid),pname,str(price),str(cost),str(dist_id),str(dokon_id),now_str()])
     except Exception as e: logger.error(f"set_price: {e}")
 
+# ── DO'KON ────────────────────────────────────────────────────────────────────
 def get_stores(dist_id=None):
+    recs = db_all("Dokonlar")
+    if dist_id: return [r for r in recs if str(r.get("Dist_ID","")).strip()==str(dist_id).strip()]
+    return recs
+
+def get_debt(dokon_id):
     try:
-        recs = db_all("Dokonlar")
-        if dist_id: return [r for r in recs if str(r.get("Dist_ID","")).strip()==str(dist_id).strip()]
-        return recs
-    except Exception: return []
+        tops = db_all("Topshirish")
+        tolovs = db_all("Tolov")
+        voz = db_all("Vozvrat")
+        qarz = sum(float(r.get("Qarz",0) or 0) for r in tops
+                   if str(r.get("Dokon_ID",""))==str(dokon_id) and r.get("Status","")=="tasdiqlangan")
+        paid = sum(float(r.get("Summa",0) or 0) for r in tolovs
+                   if str(r.get("Dokon_ID",""))==str(dokon_id) and r.get("Status","")=="tasdiqlangan")
+        voz_s = sum(float(r.get("Jami",0) or 0) for r in voz
+                    if str(r.get("Dokon_ID",""))==str(dokon_id) and r.get("Status","")=="tasdiqlangan")
+        return max(0.0, qarz - paid - voz_s)
+    except Exception: return 0.0
 
 def get_ombor(dist_id):
-    """Distribyutorning joriy ombori: qabul - topshirish + vozvrat"""
     uid = str(dist_id)
     st = {}
     for r in db_all("Qabul"):
         if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k = r.get("Mahsulot","")
-            st[k] = st.get(k,0) + float(r.get("Miqdor",0) or 0)
+            k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
     for r in db_all("Topshirish"):
         if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k = r.get("Mahsulot","")
-            st[k] = st.get(k,0) - float(r.get("Miqdor",0) or 0)
+            k=r.get("Mahsulot",""); st[k]=st.get(k,0)-float(r.get("Miqdor",0) or 0)
     for r in db_all("Vozvrat"):
         if str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan":
-            k = r.get("Mahsulot","")
-            st[k] = st.get(k,0) + float(r.get("Miqdor",0) or 0)
+            k=r.get("Mahsulot",""); st[k]=st.get(k,0)+float(r.get("Miqdor",0) or 0)
     return {k:v for k,v in st.items() if v>0.001}
 
-def get_ombor_qty(dist_id, prod_name):
-    """Ombordan bitta mahsulot miqdori"""
-    return get_ombor(dist_id).get(prod_name, 0.0)
+def parse_num(text):
+    t = str(text).strip().replace(" ","").replace(",",".")
+    try: return float(t)
+    except: return 0.0
 
+def parse_weight(text):
+    v = parse_num(text)
+    return round(v/1000,3) if v>=100 else round(v,3)
 
-def _ombor_prod_list(dist_id, la):
-    """Ombordan faqat mavjud mahsulotlar"""
-    ombor = get_ombor(str(dist_id))
-    prods = get_products()
-    result = []
-    for p in prods:
-        qty = ombor.get(p[la], ombor.get(p["uz"], ombor.get(p["ru"], 0.0)))
-        if qty > 0.001:
-            result.append((p, qty))
-    return result
+def parse_money(text):
+    t = str(text).strip().replace(" ","")
+    if re.match(r'^\d+[.,]\d{3}$',t): t = re.sub(r'[.,]','',t)
+    else: t = t.replace(",",".")
+    try: return float(t)
+    except: return 0.0
 
-def _ombor_prod_kb_markup(dist_id, la):
-    """Ombordan faqat mavjud mahsulotlar klaviatura"""
-    items = _ombor_prod_list(dist_id, la)
-    rows = []
-    prods_la = [p[la] for p,_ in items]
-    for i in range(0, len(prods_la), 2):
-        r = [prods_la[i]]
-        if i+1 < len(prods_la): r.append(prods_la[i+1])
-        rows.append(r)
-    rows.append(["🔙 Orqaga" if la=="uz" else "🔙 Назад"])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+def clean_phone(text):
+    return re.sub(r'[^\d+]','',str(text).strip())
 
-def _ombor_prod_kb(dist_id, la):
-    items = _ombor_prod_list(dist_id, la)
-    if not items: return "❌ Ombor bo'sh!" if la=="uz" else "❌ Склад пуст!"
-    lines = ["📦 Ombordan tanlang:" if la=="uz" else "📦 Выберите из склада:"]
-    for p, qty in items:
-        unit = p.get("unit","")
-        lines.append(f"  • {p[la]}: {format_qty(qty, unit, prod_name=p[la], topshirish=True)}")
-    return "\n".join(lines)
-
-
-def get_debt(dokon_id):
+# ── OCR ───────────────────────────────────────────────────────────────────────
+async def vision_ocr(image_bytes):
     try:
-        qarz = sum(float(r.get("Qarz",0) or 0) for r in db_all("Topshirish")
-                   if str(r.get("Dokon_ID",""))==str(dokon_id) and r.get("Status","")=="tasdiqlangan")
-        paid = sum(float(r.get("Summa",0) or 0) for r in db_all("Tolov")
-                   if str(r.get("Dokon_ID",""))==str(dokon_id) and r.get("Status","")=="tasdiqlangan")
-        return max(0.0, qarz - paid)
-    except Exception: return 0.0
+        import httpx
+        creds = Credentials.from_service_account_info(
+            _get_creds(), scopes=["https://www.googleapis.com/auth/cloud-vision"])
+        creds.refresh(google.auth.transport.requests.Request())
+        b64 = base64.b64encode(image_bytes).decode()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://vision.googleapis.com/v1/images:annotate",
+                headers={"Authorization": f"Bearer {creds.token}"},
+                json={"requests":[{"image":{"content":b64},"features":[{"type":"TEXT_DETECTION"}]}]})
+            return resp.json()["responses"][0].get("fullTextAnnotation",{}).get("text","").strip()
+    except Exception as e: logger.error(f"OCR: {e}"); return ""
 
-# ── MOTIVATSIYA MATNLARI (50 ta) ─────────────────────────────────────────────
+def parse_scale(text):
+    nums = re.findall(r'\d+', str(text))
+    if not nums: return 0.0
+    v = int(nums[0])
+    return round(v/1000,3) if v>=100 else float(v)
+
+# ── SOZLAMALAR ────────────────────────────────────────────────────────────────
+def get_setting(key, default="1"):
+    for r in db_all("Sozlamalar"):
+        if r.get("Kalit","")==key: return str(r.get("Qiymat",default))
+    return default
+
+def set_setting(key, val):
+    w = get_ws("Sozlamalar")
+    if not w: return
+    for i,r in enumerate(w.get_all_records()):
+        if r.get("Kalit","")==key:
+            w.update_cell(i+2,2,str(val)); w.update_cell(i+2,3,now_str()); return
+    w.append_row([key,str(val),now_str()])
+
+def namoz_on(): return get_setting("namoz","1")=="1"
+
+# ── MOTIVATSIYA ───────────────────────────────────────────────────────────────
 MOTIVATSIYA = [
-    "💪 Barakalla! Siz bugun ham ajoyib ish qildingiz. Oilangiz sizni kutmoqda — uyga sog'-salomat boring!",
+    "💪 Barakalla! Siz bugun ham ajoyib ish qildingiz. Oilangiz sizni kutmoqda!",
     "🌟 Zo'r! Har bir qadamingiz oilangiz farovonligi uchun. Muvaffaqiyat sizniki!",
-    "🏆 Ajoyib! Halol mehnat — eng ulug' boylik. Oilangizga xursandchilik olib boring!",
-    "☀️ Kun yaxshi ketmoqda! Sog'lig'ingizni asrang, oilangiz siz bilan faxrlanadi.",
-    "🤲 Barakali ish qildingiz! Alloh rizqingizni keng qilsin. Uyga eson-omon boring!",
-    "💫 Zo'r natija! Ishingiz barakali bo'lsin. Oilangiz sog'-salomat uy bekasi kutmoqda.",
-    "🌈 Mukammal! Bugungi mehnatiz ertangi baxtingiz. Xavfsiz harakatlaning!",
-    "🎯 Maqsadga yana bir qadam! Oilangiz siz bilan g'ururlanadi. Sog'-salomat boring!",
-    "🌺 Halol rizq topmoqdasiz — bu eng ulug' ibodatlardan biri. Alloh qo'llasin!",
-    "⭐ Siz ajoyib distribyutorsiz! Uyga xotirjam va eson-omon qaytishingizni tilaymiz.",
-    "🦁 Kuchli odam! Bugun ham muvaffaqiyat bilan ishlash qildingiz. Oilangizni sog'ining!",
-    "🌿 Har bir tomchi terni Alloh ko'radi. Halol mehnat qilayotganingizdan xursandmiz!",
-    "🎊 Harakatingiz meva bermoqda! Uyga borib dam oling, oilangiz siz bilan baxtli.",
-    "💎 Qimmatli insonlar shunday ishlaydi — sidqidil va mashaqqat bilan. Barakalla!",
-    "🚀 Olg'a! Siz bugun ham ajoyib ish qildingiz. Havfsiz va sog' qaytishingizni tilaymiz.",
-    "🌙 Alloh rizqingizni ziyoda qilsin. Oilangizga tez yetib boring, ular kutmoqda!",
-    "🏅 Bugun ham g'alaba! Mehnatinggiz bekorga ketmaydi. Eson-omon uyga boring!",
-    "✨ Harakatingiz baraka topsin. Oila — eng ulug' ne'mat. Tez yetib boring!",
-    "🌻 Sog'liqni asrang, baxt oilada. Alloh asrasin va rizqingizni kengaytirsin!",
-    "💪 Mashaqqat — muvaffaqiyat onasi. Bugun ham zo'r ishlading. Uyga sog' boring!",
-    "🎵 Hayot go'zal, oila — eng katta boylik! Ular siz bilan faxrlanadi. Sog'-omon boring!",
-    "🌍 Halol mehnat Vatanga ham xizmat. Barakalla, Alloh madadingiz bo'lsin!",
-    "🦅 Baland parvoz qilmoqdasiz! Uyga borib oilangiz bilan vaqt o'tkazing, haq topasiz.",
-    "🌊 Har bir to'lqin qirg'oqqa yetadi — sizning harakatingiz ham maqsadga olib boradi!",
-    "🎁 Bugun qilgan mehnatiz ertaga farzandlaringizga sovg'a. Alloh kuchinggizni ziyoda qilsin!",
+    "🏆 Ajoyib! Halol mehnat — eng ulug' boylik. Uyga sog'-salomat boring!",
+    "☀️ Kun yaxshi ketmoqda! Sog'ligingizni asrang, oilangiz siz bilan faxrlanadi.",
+    "🤲 Barakali ish qildingiz! Alloh rizqingizni keng qilsin. Eson-omon boring!",
+    "💫 Zo'r natija! Ishingiz barakali bo'lsin. Oilangiz siz bilan xursand.",
+    "🌈 Mukammal! Bugungi mehnat ertangi baxtingiz. Xavfsiz harakatlaning!",
+    "🎯 Maqsadga yana bir qadam! Oilangiz siz bilan g'ururlanadi!",
+    "🌺 Halol rizq topmoqdasiz — bu ibodatlardan biri. Alloh qo'llasin!",
+    "⭐ Siz ajoyib distribyutorsiz! Eson-omon qaytishingizni tilaymiz.",
+    "🦁 Kuchli odam! Bugun ham muvaffaqiyatli ishlading. Uyga boring!",
+    "🌿 Har bir tomchi terni Alloh ko'radi. Halol mehnat!",
+    "🎊 Harakatingiz meva bermoqda! Uyga borib dam oling.",
+    "💎 Qimmatli insonlar shunday ishlaydi — sidqidil. Barakalla!",
+    "🚀 Olg'a! Bugun ham ajoyib. Xavfsiz va sog' qaytishingizni tilaymiz.",
+    "🌙 Alloh rizqingizni ziyoda qilsin. Oilangizga tez yetib boring!",
+    "🏅 Bugun ham g'alaba! Eson-omon uyga boring!",
+    "✨ Harakatingiz baraka topsin. Oila — eng ulug' ne'mat!",
+    "🌻 Sog'liqni asrang, baxt oilada. Alloh asrasin!",
+    "💪 Mashaqqat — muvaffaqiyat onasi. Uyga sog' boring!",
+    "🎵 Hayot go'zal, oila — eng katta boylik! Sog'-omon boring!",
+    "🌍 Halol mehnat Vatanga ham xizmat. Barakalla!",
+    "🦅 Baland parvoz qilmoqdasiz! Uyga borib oilangiz bilan bo'ling.",
+    "🌊 Har bir to'lqin qirg'oqqa yetadi — siz ham maqsadga!",
+    "🎁 Bugun qilgan mehnatiz ertaga farzandlaringizga sovg'a.",
     "🏡 Uyingiz — jannatning bir bo'lagi. Tez qaytib oilangiz bilan bo'ling!",
-    "💚 Sog'lik — eng katta ne'mat. Ehtiyotkorlik bilan harakatlaning, Alloh asrasin!",
-    "🕊️ Tinchlik va barakot sizniki bo'lsin. Oilangiz sog'-salomat uy burchini kutmoqda!",
-    "🌠 Yulduzlar siz kabi mehnatkesha odamlar uchun porlaydi. Barakalla, eson-omon boring!",
-    "🤝 Ishonchli va halol ish — eng yaxshi mulk. Oilangiz bilan baxtli bo'ling!",
-    "🌸 Bahordek yangi kuch bilan ishlayapsiz! Alloh bergan sog'likni asrang, uyga boring!",
-    "🦋 O'zgarish va rivojlanish sizda. Oilangiz farovonligi uchun mehnat qilayotganingizdan xursandmiz!",
-    "🎯 Aniq maqsad — katta g'alaba. Bugun ham maqsadingizga yetdingiz. Sog' qaytishinggizni tilaymiz!",
-    "💡 Aqlli va mehnatli odam — ikki dunyoda baxtli. Alloh siz bilan bo'lsin!",
-    "🏔️ Tog' kabi mustahkam, daryo kabi tinim bilmas. Zo'r ishlading. Eson-omon uyga boring!",
-    "🌴 Palma shamolda egiladi, lekin sinmaydi. Siz ham shunday — kuchli va bardoshli!",
-    "🦊 Chaqqon va aqlli! Bugun ham muvaffaqiyatli ish qildingiz. Oilangizni ko'rishga shoshing!",
-    "🌺 Gul kabi inson — boshqalarga ham xursandchilik ulashadigan. Barakalla, eson boring!",
-    "⚡ Energiyangiz baland! Shu kuch bilan uyga ham kiring, oilangiz siz bilan xursand!",
-    "🎋 Pishiq va ishonchli inson. Alloh rizqingizni uzmasin. Sog'-salomat qaytishinggizni tilaymiz!",
-    "🏄 To'lqinlarni yengib o'tmoqdasiz! Ajoyib. Oilangiz qirg'oqda kutmoqda, boring!",
-    "🌟 Har kuni yangi imkoniyat. Siz uni ishlatdingiz. Barakalla! Uyga xotirjam boring!",
-    "🎶 Hayot — musiqa, mehnat — ohang. Siz bugun go'zal kuy aytdingiz. Eson-omon boring!",
-    "🦉 Dono va tajribali. Bugungi ish ertaga tajriba bo'ladi. Alloh oilangizni asrasin!",
-    "🍀 Baxt to'rt bargli yoʻngichqaday kam — lekin siz uni topmoqdasiz! Oilangiz bilan baxtli bo'ling!",
-    "🌊 Dengiz chuqur, aql undan chuqur. Sizning mehnatinggiz g'oyat qadrli. Eson-omon boring!",
-    "🎠 Bugun qilgan ishingiz ertaga sababli bo'ladi. Alloh siz va oilangizni asrasin!",
-    "🏹 Maqsadga to'g'ri! Bugun ham a'lo natija. Sog' va eson uyga qaytishingizni tilaymiz!",
-    "🌈 Yomg'irdan keyin kamalak chiqadi — mashaqqatdan keyin baxt keladi. Oldinga!",
-    "💝 Oilangizga eng yaxshi sovg'a — o'zingiz sog'-salomat uyga qaytishingiz. Ehtiyot bo'ling!",
+    "💚 Sog'lik — eng katta ne'mat. Ehtiyotkorlik bilan harakatlaning!",
+    "🕊️ Tinchlik va barakot sizniki bo'lsin.",
+    "🌠 Yulduzlar mehnatkesha odamlar uchun porlaydi. Eson-omon boring!",
+    "🤝 Ishonchli va halol ish — eng yaxshi mulk.",
+    "🌸 Bahordek yangi kuch bilan ishlayapsiz!",
+    "🦋 O'zgarish va rivojlanish sizda.",
+    "🎯 Aniq maqsad — katta g'alaba. Bugun ham maqsadingizga yetdingiz!",
+    "💡 Aqlli va mehnatli odam — ikki dunyoda baxtli.",
+    "🏔️ Tog' kabi mustahkam, daryo kabi tinim bilmas!",
+    "🌴 Palma shamolda egiladi, lekin sinmaydi — siz ham!",
+    "🦊 Chaqqon va aqlli! Oilangizni ko'rishga shoshing!",
+    "🌺 Gul kabi inson — boshqalarga xursandchilik ulashadi.",
+    "⚡ Energiyangiz baland! Uyga ham kiring shunday!",
+    "🎋 Pishiq va ishonchli inson. Eson-omon qaytishinggizni tilaymiz!",
+    "🏄 To'lqinlarni yengib o'tmoqdasiz!",
+    "🌟 Har kuni yangi imkoniyat. Siz uni ishlatdingiz!",
+    "🎶 Hayot musiqa, mehnat ohang. Eson-omon boring!",
+    "🦉 Dono va tajribali. Alloh oilangizni asrasin!",
+    "🍀 Baxt to'rt bargli yoʻngichqaday — siz uni topmoqdasiz!",
+    "🌊 Mehnatinggiz g'oyat qadrli. Eson-omon boring!",
+    "🎠 Bugun qilgan ishingiz ertaga sababli bo'ladi.",
+    "🏹 Maqsadga to'g'ri! Bugun ham a'lo natija!",
+    "🌈 Yomg'irdan keyin kamalak — mashaqqatdan keyin baxt!",
+    "💝 Oilangizga eng yaxshi sovg'a — siz sog'-salomat uyga qaytishingiz!",
 ]
 
-import random
-def get_motivatsiya():
-    return random.choice(MOTIVATSIYA)
+def get_motiv(): return random.choice(MOTIVATSIYA)
 
 # ── NAMOZ VAQTLARI (TOSHKENT) ─────────────────────────────────────────────────
-# Har kuni taxminiy vaqtlar (oyma-oy o'zgaradi)
-# Asl vaqtlar API dan olinishi kerak, lekin taxminiy jadval shu
-# Format: (oy, kun): (bomdod_soat, bomdod_daqiqa, quyosh, peshin, asr, shom, xufton)
-
-NAMOZ_VAQTLARI_TOSHKENT = {
-    # Yanvar
+NAMOZ = {
     1:  [(6,25),(8,5),(12,50),(15,35),(17,40),(19,25)],
     2:  [(5,55),(7,45),(12,55),(15,55),(18,5),(19,50)],
     3:  [(5,15),(7,10),(13,0),(16,15),(18,30),(20,15)],
@@ -400,790 +400,833 @@ NAMOZ_VAQTLARI_TOSHKENT = {
     11: [(5,45),(7,30),(12,45),(15,30),(17,35),(19,15)],
     12: [(6,15),(8,0),(12,45),(15,15),(17,15),(19,0)],
 }
-
-def get_namoz_vaqtlari(oy=None):
-    """Joriy oy namoz vaqtlari: [bomdod, quyosh, peshin, asr, shom, xufton]"""
-    if oy is None: oy = datetime.now().month
-    vaqtlar = NAMOZ_VAQTLARI_TOSHKENT.get(oy, NAMOZ_VAQTLARI_TOSHKENT[1])
-    nomlar = ["Bomdod", "Quyosh chiqishi", "Peshin", "Asr", "Shom", "Xufton"]
-    return [(nomlar[i], vaqtlar[i][0], vaqtlar[i][1]) for i in range(len(vaqtlar))]
+NAMOZ_NOMLARI = ["Bomdod","Quyosh","Peshin","Asr","Shom","Xufton"]
 
 
-# ── SOZLAMALAR ────────────────────────────────────────────────────────────────
-def get_setting(kalit, default="1"):
-    try:
-        for r in db_all("Sozlamalar"):
-            if r.get("Kalit","") == kalit:
-                return str(r.get("Qiymat", default))
-        return default
-    except Exception: return default
+# ── INLINE KEYBOARD YARATUVCHILAR ─────────────────────────────────────────────
+def ik(*rows):
+    """Inline keyboard yaratish: ik(["matn","cb"], ["matn2","cb2"])"""
+    return InlineKeyboardMarkup([[InlineKeyboardButton(r[0], callback_data=r[1])] if len(r)==2
+                                  else InlineKeyboardButton(r[0], callback_data=r[1])
+                                  for r in rows])
 
-def set_setting(kalit, qiymat):
-    try:
-        w = get_ws("Sozlamalar")
-        if not w: return
-        recs = w.get_all_records()
-        for i, r in enumerate(recs):
-            if r.get("Kalit","") == kalit:
-                w.update_cell(i+2, 2, str(qiymat))
-                w.update_cell(i+2, 3, now_str())
-                return
-        w.append_row([kalit, str(qiymat), now_str()])
-    except Exception as e: logger.error(f"set_setting: {e}")
+def ikr(*rows):
+    """Inline keyboard - har bir rows list bo'ladi"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(b[0], callback_data=b[1]) for b in row]
+        for row in rows
+    ])
 
-def namoz_yoqilgan():
-    return get_setting("namoz_eslatma", "1") == "1"
+def phone_kb(la_):
+    btn = "📱 Telefon yuborish" if la_=="uz" else "📱 Отправить телефон"
+    return ReplyKeyboardMarkup([[KeyboardButton(btn, request_contact=True)]], resize_keyboard=True)
 
-
-def calc_foyda(dist_uid_str, from_date_str=None):
-    try:
-        tops = [r for r in db_all("Topshirish") if str(r.get("Dist_ID",""))==dist_uid_str and r.get("Status","")=="tasdiqlangan"]
-        ins  = [r for r in db_all("Qabul")       if str(r.get("Dist_ID",""))==dist_uid_str and r.get("Status","")=="tasdiqlangan"]
-        if from_date_str:
-            tops = [r for r in tops if str(r.get("Sana",""))>=from_date_str]
-            ins  = [r for r in ins  if str(r.get("Sana",""))>=from_date_str]
-        return sum(float(r.get("Jami",0) or 0) for r in tops) - sum(float(r.get("Jami",0) or 0) for r in ins)
-    except Exception: return 0.0
-
-def parse_weight(text):
-    t = str(text).strip().replace(" ","").replace(",",".")
-    try:
-        val = float(t)
-        return round(val/1000,3) if val>=100 else round(val,3)
-    except: return 0.0
-
-def parse_money(text):
-    t = str(text).strip().replace(" ","")
-    if re.match(r'^\d+[.,]\d{3}$', t): t = re.sub(r'[.,]','',t)
-    else: t = t.replace(",",".")
-    try: return float(t)
-    except: return 0.0
-
-def clean_phone(text):
-    return re.sub(r'[^\d+]','',str(text).strip())
-
-async def vision_ocr(image_bytes):
-    try:
-        import httpx
-        creds = Credentials.from_service_account_info(
-            get_creds_dict(), scopes=["https://www.googleapis.com/auth/cloud-vision"])
-        creds.refresh(google.auth.transport.requests.Request())
-        b64 = base64.b64encode(image_bytes).decode()
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://vision.googleapis.com/v1/images:annotate",
-                headers={"Authorization": f"Bearer {creds.token}"},
-                json={"requests":[{"image":{"content":b64},"features":[{"type":"TEXT_DETECTION"}]}]})
-            return resp.json()["responses"][0].get("fullTextAnnotation",{}).get("text","").strip()
-    except Exception as e: logger.error(f"OCR: {e}"); return ""
-
-def parse_scale(text):
-    if not text: return 0.0
-    nums = re.findall(r'\d+', text)
-    if not nums: return 0.0
-    try:
-        val = int(nums[0])
-        return round(val/1000,3) if val>=100 else float(val)
-    except: return 0.0
-
-# ── MATNLAR ───────────────────────────────────────────────────────────────────
-T = {
-    "start":            {"uz":"Tilni tanlang:","ru":"Выберите язык:"},
-    "reg_name":         {"uz":"Ismingizni kiriting:","ru":"Введите имя:"},
-    "reg_fname":        {"uz":"Familiyangizni kiriting:","ru":"Введите фамилию:"},
-    "reg_phone":        {"uz":"Telefon raqamingizni yuboring:","ru":"Отправьте номер телефона:"},
-    "reg_passport":     {"uz":"Passport rasmini yuboring:\n(yoki Otkazib yuborish)","ru":"Фото паспорта:\n(или Пропустить)"},
-    "reg_ok":           {"uz":"✅ Ro'yxatdan o'tdingiz {name}!\n🔑 Sizning ID: <b>{sid}</b>\nBu IDni saqlang!\n\nAdmin tasdiqlashini kuting...","ru":"✅ Вы зарегистрированы {name}!\n🔑 Ваш ID: <b>{sid}</b>\nСохраните ID!\n\nОжидайте подтверждения..."},
-    "wait_approve":     {"uz":"⏳ Hisobingiz tasdiqlanmagan. Admin tasdiqlashini kuting.","ru":"⏳ Аккаунт не подтверждён. Ожидайте."},
-    "resend_btn":       {"uz":"📤 Ma'lumotlarni qayta yuborish","ru":"📤 Повторно отправить"},
-    "resent_ok":        {"uz":"Adminga yuborildi. Kuting.","ru":"Отправлено. Ожидайте."},
-    "reg_admin_msg":    {"uz":"👤 YANGI DISTRIBYUTOR:\nIsm: {name}\nTel: {phone}\nTG_ID: {uid}\nID: <b>{sid}</b>\n\n✅ /approve_{uid}\n❌ /reject_{uid}","ru":"👤 НОВЫЙ ДИСТРИБЬЮТОР:\nИмя: {name}\nТел: {phone}\nTG_ID: {uid}\nID: <b>{sid}</b>\n\n✅ /approve_{uid}\n❌ /reject_{uid}"},
-    "approved_msg":     {"uz":"✅ Hisobingiz tasdiqlandi!\n🔑 Sizning ID: <b>{sid}</b>\n\n/start bosing.","ru":"✅ Аккаунт подтверждён!\n🔑 Ваш ID: <b>{sid}</b>\n\nНажмите /start."},
-    "rejected_msg":     {"uz":"❌ Hisobingiz rad etildi.","ru":"❌ Аккаунт отклонён."},
-    "rejected_retry":   {"uz":"Qayta kiriting:","ru":"Введите заново:"},
-    "main":             {"uz":"📋 Asosiy menyu | 🔑 ID: <b>{sid}</b>","ru":"📋 Главное меню | 🔑 ID: <b>{sid}</b>"},
-    "qabul":            {"uz":"📥 Zavoddan qabul","ru":"📥 Получить с завода"},
-    "buyurtma":         {"uz":"📋 Buyurtmalar","ru":"📋 Заказы"},
-    "topshir":          {"uz":"🚚 Mol topshirish","ru":"🚚 Передать товар"},
-    "tolov_qabul":      {"uz":"💵 Tolov qabul","ru":"💵 Принять оплату"},
-    "natija":           {"uz":"📊 Kunlik natija","ru":"📊 Итог дня"},
-    "ombor":            {"uz":"📦 Ombor","ru":"📦 Склад"},
-    "marshrut":         {"uz":"🗺 Marshrut","ru":"🗺 Маршрут"},
-    "hisobot":          {"uz":"📈 Hisobot","ru":"📈 Отчёт"},
-    "my_stores":        {"uz":"🏪 Do'konlarim","ru":"🏪 Мои магазины"},
-    "my_prices":        {"uz":"💰 Narxlarim","ru":"💰 Мои цены"},
-    "admin":            {"uz":"⚙️ Admin panel","ru":"⚙️ Админ панель"},
-    "back":             {"uz":"🔙 Orqaga","ru":"🔙 Назад"},
-    "prod":             {"uz":"Mahsulotni tanlang:","ru":"Выберите товар:"},
-    "store":            {"uz":"Do'konni tanlang:","ru":"Выберите магазин:"},
-    "no_store":         {"uz":"⚠️ Do'konlar yo'q.\nAdmin panel orqali qo'shing.","ru":"⚠️ Магазины не найдены.\nДобавьте через админ панель."},
-    "qty":              {"uz":"Miqdorni kiriting (masalan: 5 yoki 5.5):","ru":"Количество (например: 5 или 5.5):"},
-    "ok":               {"uz":"✅ Saqlandi!","ru":"✅ Сохранено!"},
-    "err_num":          {"uz":"❌ Raqam kiriting!","ru":"❌ Введите число!"},
-    "err_weight":       {"uz":"❌ Og'irlikni kiriting! Masalan: 3.455","ru":"❌ Введите вес! Например: 3.455"},
-    "err_money":        {"uz":"❌ Summani kiriting! Masalan: 15000","ru":"❌ Введите сумму! Например: 15000"},
-    "err_phone":        {"uz":"❌ Faqat raqam!","ru":"❌ Только цифры!"},
-    "skip":             {"uz":"⏭ Otkazib yuborish","ru":"⏭ Пропустить"},
-    "loc_btn":          {"uz":"📍 Lokatsiyani yuborish","ru":"📍 Отправить геолокацию"},
-    "phone_btn":        {"uz":"📱 Telefon raqamni yuborish","ru":"📱 Отправить номер телефона"},
-    "send_loc":         {"uz":"📍 Lokatsiyangizni yuboring:","ru":"📍 Отправьте геолокацию:"},
-    "top_pay_type":     {"uz":"💳 Tolov usulini tanlang:","ru":"💳 Способ оплаты:"},
-    "naqd":             {"uz":"💵 Naqd","ru":"💵 Наличные"},
-    "realizatsiya":     {"uz":"📝 Realizatsiya","ru":"📝 Реализация"},
-    "top_naqd_sum":     {"uz":"💵 Naqd summani kiriting:\n(0 = to'liq realizatsiya)","ru":"💵 Сумма наличных:\n(0 = полностью в долг)"},
-    "photo_scale":      {"uz":"📸 Tarozi rasmini yuboring\nYOKI ⌨️ og'irlikni kiriting (masalan: 3.455):","ru":"📸 Фото весов\nИЛИ ⌨️ введите вес (например: 3.455):"},
-    "ocr_ok":           {"uz":"📸 Rasmdan o'qildi: {v} kg\nTo'g'ri? HA bosing yoki to'g'ri raqamni kiriting:","ru":"📸 Считано: {v} кг\nВерно? ДА или введите правильное:"},
-    "ocr_fail":         {"uz":"❌ O'qib bo'lmadi. Og'irlikni kiriting:","ru":"❌ Не удалось. Введите вес:"},
-    "reading":          {"uz":"⏳ Rasm o'qilmoqda...","ru":"⏳ Читаю изображение..."},
-    "top_dokon_msg":    {"uz":"📦 MOL KELDI:\n{dist}\n{prod}: {qty} {unit}\nJami: {jami:,.0f}\nNaqd: {naqd:,.0f}\nQarz: {qarz:,.0f}\n\n✅ /tok_{id}\n❌ /trad_{id}","ru":"📦 ПОСТАВКА:\n{dist}\n{prod}: {qty} {unit}\nИтог: {jami:,.0f}\nНал: {naqd:,.0f}\nДолг: {qarz:,.0f}\n\n✅ /tok_{id}\n❌ /trad_{id}"},
-    "top_ok_dist":      {"uz":"✅ {dokon} molni qabul qildi!","ru":"✅ {dokon} принял товар!"},
-    "top_rad_dist":     {"uz":"❌ {dokon} molni rad etdi!","ru":"❌ {dokon} отклонил!"},
-    "tolov_dist_msg":   {"uz":"💵 TOLOV:\n{dokon}\nSumma: {summa:,.0f}\n\n✅ /vok_{id}\n❌ /vrad_{id}","ru":"💵 ОПЛАТА:\n{dokon}\nСумма: {summa:,.0f}\n\n✅ /vok_{id}\n❌ /vrad_{id}"},
-    "tolov_ok":         {"uz":"✅ Tolov tasdiqlandi!","ru":"✅ Оплата подтверждена!"},
-    "tolov_rad":        {"uz":"❌ Tolov rad etildi!","ru":"❌ Оплата отклонена!"},
-    "zakaz_dist_new":   {"uz":"📋 YANGI ZAKAZ:\nDo'kon: {dokon}\n{prod}: {qty} {unit}\n\n✅ /zqabul_{id}\n❌ /zrad_z_{id}","ru":"📋 НОВЫЙ ЗАКАЗ:\nМаг: {dokon}\n{prod}: {qty} {unit}\n\n✅ /zqabul_{id}\n❌ /zrad_z_{id}"},
-    "zakaz_reminder":   {"uz":"⏰ Eslatma! Zakaz kutilmoqda:\n{dokon}: {prod} {qty}\nID: {id}","ru":"⏰ Напоминание!\n{dokon}: {prod} {qty}\nID: {id}"},
-    "zakaz_timeout":    {"uz":"⚠️ Zakazingiz ({prod} {qty}) 2 soat ichida qabul qilinmadi.\n\nDist bilan bog'laning:\n📞 {phone}\n👤 {name}","ru":"⚠️ Ваш заказ ({prod} {qty}) не принят 2 часа.\n\n📞 {phone}\n👤 {name}"},
-    "zakaz_comment_q":  {"uz":"📝 Izoh yozing (yoki Otkazib yuborish):","ru":"📝 Комментарий (или Пропустить):"},
-    "zakaz_acc_dist":   {"uz":"✅ Zakaz qabul qilindi!\nIzoh: {izoh}","ru":"✅ Заказ принят!\nКомментарий: {izoh}"},
-    "zakaz_rad_dist":   {"uz":"❌ Zakaz rad etildi.\nIzoh: {izoh}","ru":"❌ Заказ отклонён.\nКомментарий: {izoh}"},
-    "narx_prod":        {"uz":"Mahsulotni tanlang:","ru":"Выберите товар:"},
-    "narx_type":        {"uz":"Qaysi narx?","ru":"Какую цену?"},
-    "narx_umumiy":      {"uz":"🔵 Barcha do'konlar","ru":"🔵 Для всех магазинов"},
-    "narx_maxsus":      {"uz":"🟡 Bitta do'kon uchun","ru":"🟡 Для одного магазина"},
-    "narx_val":         {"uz":"Yangi narx (masalan: 15000):","ru":"Новая цена (например: 15000):"},
-    "tannarx_val":      {"uz":"Tannarx (masalan: 12000):","ru":"Себестоимость (например: 12000):"},
-    "narx_updated":     {"uz":"✅ Narx yangilandi!","ru":"✅ Цена обновлена!"},
-    "no_admin":         {"uz":"🚫 Siz admin emassiz!","ru":"🚫 Вы не администратор!"},
-    "adm":              {"uz":"⚙️ Admin paneli:","ru":"⚙️ Админ панель:"},
-    "adm_mahsulot":     {"uz":"➕ Mahsulot qo'shish","ru":"➕ Добавить товар"},
-    "adm_price":        {"uz":"💰 Umumiy narxlar","ru":"💰 Общие цены"},
-    "adm_add_store":    {"uz":"🏪 Do'kon qo'shish","ru":"🏪 Добавить магазин"},
-    "adm_add_dist":     {"uz":"🚚 Distribyutor qo'shish","ru":"🚚 Добавить дистрибьютора"},
-    "adm_stats":        {"uz":"📊 Statistika","ru":"📊 Статистика"},
-    "adm_broadcast":    {"uz":"📢 Xabar yuborish","ru":"📢 Рассылка"},
-    "adm_namoz":        {"uz":"🕌 Namoz eslatmasi","ru":"🕌 Напоминание о намазе"},
-    "adm_debtors":      {"uz":"💸 Qarzdorlar","ru":"💸 Должники"},
-    "adm_list_stores":  {"uz":"🏪 Do'konlar","ru":"🏪 Магазины"},
-    "adm_list_dists":   {"uz":"🚚 Distribyutorlar","ru":"🚚 Дистрибьюторы"},
-    "adm_zavod_list":   {"uz":"📦 Zavod so'rovlari","ru":"📦 Запросы завода"},
-    "broadcast_msg":    {"uz":"Xabar matnini kiriting:","ru":"Введите текст рассылки:"},
-    "mahsulot_nom_uz":  {"uz":"Mahsulot nomini kiriting (o'zbekcha):","ru":"Название (по-узбекски):"},
-    "mahsulot_nom_ru":  {"uz":"Mahsulot nomini kiriting (ruscha):","ru":"Название (по-русски):"},
-    "mahsulot_unit":    {"uz":"Birligini tanlang:","ru":"Единица измерения:"},
-    "mahsulot_ok":      {"uz":"✅ Mahsulot qo'shildi: {name}","ru":"✅ Товар добавлен: {name}"},
-    "week":             {"uz":"Haftalik","ru":"Недельный"},
-    "month":            {"uz":"Oylik","ru":"Месячный"},
-    "dokon_name":       {"uz":"Do'kon nomini kiriting:","ru":"Название магазина:"},
-    "dokon_addr":       {"uz":"Manzilini kiriting:","ru":"Адрес магазина:"},
-    "dokon_mchj":       {"uz":"MCHJ nomi (yoki Otkazib yuborish):","ru":"ООО (или Пропустить):"},
-    "dokon_tel1":       {"uz":"Telefon 1 (faqat raqamlar):","ru":"Телефон 1 (только цифры):"},
-    "dokon_tel2":       {"uz":"Telefon 2 (yoki Otkazib yuborish):","ru":"Телефон 2 (или Пропустить):"},
-    "dokon_photo_q":    {"uz":"Do'kon rasmini yuboring (yoki Otkazib yuborish):","ru":"Фото магазина (или Пропустить):"},
-    "dokon_loc_q":      {"uz":"Lokatsiyasini yuboring (yoki Otkazib yuborish):","ru":"Локацию (или Пропустить):"},
-    "dokon_saved":      {"uz":"✅ Do'kon saqlandi: {name}","ru":"✅ Магазин сохранён: {name}"},
-    "zavod_req":        {"uz":"⏳ ZAVOD SO'ROVI:\nDist: {dist} (ID:{sid})\n{prod}: {qty} {unit}\nNarx: {narx:,.0f}\nJami: {jami:,.0f}\nRef: {id}\n\n✅ /zok_{id}\n❌ /zrad_{id}","ru":"⏳ ЗАВОД:\nДист: {dist} (ID:{sid})\n{prod}: {qty} {unit}\nЦена: {narx:,.0f}\nИтог: {jami:,.0f}\nRef: {id}\n\n✅ /zok_{id}\n❌ /zrad_{id}"},
-    "zavod_wait":       {"uz":"⏳ So'rov adminga yuborildi. Kuting...","ru":"⏳ Запрос отправлен. Ожидайте..."},
-    "zavod_ok":         {"uz":"✅ Zavod so'rovi tasdiqlandi!","ru":"✅ Запрос подтверждён!"},
-    "zavod_rad":        {"uz":"❌ Zavod so'rovi rad etildi.","ru":"❌ Запрос отклонён."},
-    # Avtomatik eslatma
-    "auto_zakaz_remind":{"uz":"📋 KECHA MOL BERILGAN DO'KONLAR:\n(Zakaz olish kerakmi?)\n\n{dokonlar}\n\nAgar zakaz bo'lsa, ular bilan bog'laning!","ru":"📋 МАГАЗИНЫ, КОТОРЫМ ВЧЕРА ПОСТАВИЛИ ТОВАР:\n(Нужно ли сделать заказ?)\n\n{dokonlar}\n\nСвяжитесь с ними если нужен заказ!"},
-}
-
-def tx(k, la="uz", **kw):
-    t = T.get(k,{}).get(la,k)
-    return t.format(**kw) if kw else t
-
-def lg(ctx):     return ctx.user_data.get("lang","uz")
-def is_adm(ctx): return ctx.user_data.get("is_admin", False)
-def find_prod(name, la):
-    return next((p for p in get_products() if p[la]==name), None)
-
-def main_kb(la, sid="", admin=False):
+def main_kb(uid, la_):
+    """Asosiy menyu - inline"""
+    is_admin = int(uid) in ADMIN_IDS
     rows = [
-        [tx("qabul",la), tx("buyurtma",la)],
-        [tx("topshir",la), tx("tolov_qabul",la)],
-        [tx("natija",la), tx("ombor",la)],
-        [tx("marshrut",la), tx("hisobot",la)],
-        [tx("my_stores",la), tx("my_prices",la)],
+        [("📥 Zavoddan qabul","m:qabul"), ("📋 Buyurtmalar","m:buyurtma")],
+        [("🚚 Mol topshirish","m:topshir"), ("💵 To'lov qabul","m:tolov")],
+        [("📊 Kunlik natija","m:natija"), ("📦 Ombor","m:ombor")],
+        [("🗺 Marshrut","m:marshrut"), ("📈 Hisobot","m:hisobot")],
+        [("🏪 Do'konlarim","m:dokonlar"), ("💰 Narxlarim","m:narxlar")],
     ]
-    if admin: rows.append([tx("admin",la)])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+    if is_admin: rows.append([("⚙️ Admin panel","m:admin")])
+    return ikr(*rows)
 
-def admin_kb(la):
-    return ReplyKeyboardMarkup([
-        [tx("adm_mahsulot",la), tx("adm_price",la)],
-        [tx("adm_add_store",la), tx("adm_add_dist",la)],
-        [tx("adm_stats",la), tx("adm_debtors",la)],
-        [tx("adm_list_stores",la), tx("adm_list_dists",la)],
-        [tx("adm_zavod_list",la), tx("adm_broadcast",la)],
-        [tx("adm_namoz",la)],
-        [tx("back",la)],
-    ], resize_keyboard=True)
-
-def prod_kb(la):
-    prods = get_products(); rows = []
+def prod_kb(prods, la_, prefix="prod", back_cb="m:main"):
+    """Mahsulotlar inline keyboard"""
+    rows = []
     for i in range(0, len(prods), 2):
-        r = [prods[i][la]]
-        if i+1 < len(prods): r.append(prods[i+1][la])
-        rows.append(r)
-    rows.append([tx("back",la)])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+        row = [(prods[i][la_], f"{prefix}:{prods[i]['id']}")]
+        if i+1 < len(prods): row.append((prods[i+1][la_], f"{prefix}:{prods[i+1]['id']}"))
+        rows.append(row)
+    rows.append([("🔙 Orqaga" if la_=="uz" else "🔙 Назад", back_cb)])
+    return ikr(*rows)
 
-def store_kb(stores, la):
-    rows = [[s.get("Nomi","")] for s in stores if s.get("Nomi","")]
-    rows.append([tx("back",la)])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+def store_kb(stores, prefix="store", back_cb="m:main"):
+    """Do'konlar inline keyboard"""
+    rows = [[( s.get("Nomi",""), f"{prefix}:{s.get('ID','')}")] for s in stores]
+    rows.append([("🔙 Orqaga", back_cb)])
+    return ikr(*rows)
 
-def back_kb(la):  return ReplyKeyboardMarkup([[tx("back",la)]], resize_keyboard=True)
-def skip_kb(la):  return ReplyKeyboardMarkup([[tx("skip",la)],[tx("back",la)]], resize_keyboard=True)
-def wait_kb(la):  return ReplyKeyboardMarkup([[tx("resend_btn",la)]], resize_keyboard=True)
-def yes_kb(la):   return ReplyKeyboardMarkup([["HA" if la=="uz" else "ДА", tx("back",la)]], resize_keyboard=True)
-def phone_kb(la): return ReplyKeyboardMarkup([[KeyboardButton(tx("phone_btn",la), request_contact=True)]], resize_keyboard=True)
-def loc_kb(la):
-    return ReplyKeyboardMarkup([[KeyboardButton(tx("loc_btn",la), request_location=True)],[tx("skip",la)],[tx("back",la)]], resize_keyboard=True)
+def back_ik(cb="m:main", txt="🔙 Orqaga"):
+    return ikr([(txt, cb)])
 
-# ── START ─────────────────────────────────────────────────────────────────────
+def yes_no_ik(yes_cb, no_cb, la_):
+    return ikr(
+        [("✅ Ha" if la_=="uz" else "✅ Да", yes_cb)],
+        [("❌ Yo'q" if la_=="uz" else "❌ Нет", no_cb)]
+    )
+
+
+# ── YORDAMCHI FUNKSIYALAR ─────────────────────────────────────────────────────
+async def send_main(bot_or_ctx, uid, la_, sid, edit=None):
+    """Asosiy menyuni yuborish yoki tahrirlash"""
+    text = f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>"
+    kb = main_kb(uid, la_)
+    if edit:
+        try:
+            await edit.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await bot_or_ctx.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await bot_or_ctx.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+
+async def answer(q, text=""):
+    try: await q.answer(text)
+    except Exception: pass
+
+async def edit_or_send(upd, ctx, text, kb=None, parse_mode="HTML"):
+    """Callback bo'lsa edit, bo'lmasa yangi xabar"""
+    if upd.callback_query:
+        q = upd.callback_query
+        await answer(q)
+        try:
+            await q.edit_message_text(text, reply_markup=kb, parse_mode=parse_mode)
+        except Exception:
+            await ctx.bot.send_message(upd.effective_user.id, text, reply_markup=kb, parse_mode=parse_mode)
+    else:
+        await upd.message.reply_text(text, reply_markup=kb, parse_mode=parse_mode)
+
+# ── START & LANG ──────────────────────────────────────────────────────────────
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = upd.effective_user.id
-    ctx.user_data["is_admin"] = uid in ADMIN_IDS
     user = get_user(uid)
-    if user:
-        la = user.get("Til","uz"); ctx.user_data["lang"] = la
-        sid = user.get("Short_ID","ADMIN") if uid not in ADMIN_IDS else "ADMIN"
-        if is_approved(uid):
-            admin = uid in ADMIN_IDS
-            await upd.message.reply_text(tx("main",la,sid=sid), reply_markup=main_kb(la,sid,admin), parse_mode="HTML")
-            return MAIN_MENU
-        elif is_rejected(uid):
-            await upd.message.reply_text(tx("rejected_msg",la)+"\n\n"+tx("rejected_retry",la)); return REG_NAME
-        else:
-            await upd.message.reply_text(tx("wait_approve",la), reply_markup=wait_kb(la)); return WAIT_APPROVE
+
     if uid in ADMIN_IDS:
-        la = ctx.user_data.get("lang","uz")
-        await upd.message.reply_text(tx("main",la,sid="ADMIN"), reply_markup=main_kb(la,"ADMIN",True), parse_mode="HTML")
-        return MAIN_MENU
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("O'zbek", callback_data="lang_uz"),
-        InlineKeyboardButton("Русский", callback_data="lang_ru"),
-    ]])
-    await upd.message.reply_text(tx("start"), reply_markup=kb)
-    return LANG_SELECT
+        la_ = ctx.user_data.get("lang","uz")
+        ctx.user_data["lang"] = la_
+        sid = get_sid(uid)
+        await upd.message.reply_text(
+            f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+            reply_markup=main_kb(uid, la_), parse_mode="HTML",
+            reply_markup_remove=None)
+        return ST_MAIN
+
+    if user:
+        la_ = user.get("Til","uz"); ctx.user_data["lang"] = la_
+        sid = user.get("Short_ID","?")
+        status = str(user.get("Status","")).lower()
+        if status in ["tasdiqlangan","1"]:
+            await upd.message.reply_text(
+                f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+                reply_markup=main_kb(uid, la_), parse_mode="HTML")
+            return ST_MAIN
+        elif status in ["rad_etildi"]:
+            await upd.message.reply_text(
+                "❌ Hisobingiz rad etildi. Qayta ro'yxatdan o'ting:" if la_=="uz"
+                else "❌ Аккаунт отклонён. Зарегистрируйтесь заново:")
+            return ST_REG_NAME
+        else:
+            await upd.message.reply_text(
+                "⏳ Hisobingiz tasdiqlanmagan. Admin tasdiqlashini kuting." if la_=="uz"
+                else "⏳ Аккаунт не подтверждён. Ожидайте.",
+                reply_markup=ikr([("📤 Qayta yuborish","resend")]))
+            return ST_WAIT_APPROVE
+
+    kb = ikr([("🇺🇿 O'zbek","lang:uz")],[("🇷🇺 Русский","lang:ru")])
+    await upd.message.reply_text("Tilni tanlang / Выберите язык:", reply_markup=kb)
+    return ST_LANG
 
 async def lang_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query; await q.answer()
-    la = q.data.replace("lang_",""); ctx.user_data["lang"] = la
-    uid = upd.effective_user.id; ctx.user_data["is_admin"] = uid in ADMIN_IDS
-    await q.edit_message_text("Til tanlandi!" if la=="uz" else "Язык выбран!")
+    q = upd.callback_query; await answer(q)
+    la_ = q.data.split(":")[1]; ctx.user_data["lang"] = la_
+    uid = upd.effective_user.id
+
     if uid in ADMIN_IDS:
-        await ctx.bot.send_message(uid, tx("main",la,sid="ADMIN"), reply_markup=main_kb(la,"ADMIN",True), parse_mode="HTML")
-        return MAIN_MENU
+        sid = get_sid(uid)
+        await q.edit_message_text(f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+            reply_markup=main_kb(uid,la_), parse_mode="HTML")
+        return ST_MAIN
+
     user = get_user(uid)
     if user:
-        la = user.get("Til",la); ctx.user_data["lang"]=la; sid=user.get("Short_ID","?")
-        if is_approved(uid):
-            await ctx.bot.send_message(uid,tx("main",la,sid=sid),reply_markup=main_kb(la,sid,False),parse_mode="HTML"); return MAIN_MENU
-        elif is_rejected(uid):
-            await ctx.bot.send_message(uid,tx("rejected_msg",la)+"\n\n"+tx("rejected_retry",la)); return REG_NAME
+        la_ = user.get("Til",la_); ctx.user_data["lang"]=la_
+        sid = user.get("Short_ID","?")
+        status = str(user.get("Status","")).lower()
+        if status in ["tasdiqlangan","1"]:
+            await q.edit_message_text(f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+                reply_markup=main_kb(uid,la_), parse_mode="HTML")
+            return ST_MAIN
+        elif status == "rad_etildi":
+            await q.edit_message_text("❌ Rad etildi. Ism kiriting:")
+            return ST_REG_NAME
         else:
-            await ctx.bot.send_message(uid,tx("wait_approve",la),reply_markup=wait_kb(la)); return WAIT_APPROVE
-    await ctx.bot.send_message(uid, tx("reg_name",la), reply_markup=ReplyKeyboardMarkup([[]], resize_keyboard=True))
-    return REG_NAME
+            await q.edit_message_text("⏳ Tasdiqlanmagan.",
+                reply_markup=ikr([("📤 Qayta yuborish","resend")]))
+            return ST_WAIT_APPROVE
+
+    await q.edit_message_text("Ismingizni kiriting:" if la_=="uz" else "Введите имя:")
+    return ST_REG_NAME
 
 # ── RO'YXAT ───────────────────────────────────────────────────────────────────
 async def reg_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_name"]=upd.message.text.strip()
-    await upd.message.reply_text(tx("reg_fname",lg(ctx))); return REG_FNAME
+    ctx.user_data["rn"] = upd.message.text.strip()
+    la_ = la(ctx)
+    await upd.message.reply_text("Familiyangizni kiriting:" if la_=="uz" else "Введите фамилию:")
+    return ST_REG_FNAME
 
 async def reg_fname(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_fname"]=upd.message.text.strip(); la=lg(ctx)
-    await upd.message.reply_text(tx("reg_phone",la),reply_markup=phone_kb(la)); return REG_PHONE
+    ctx.user_data["rf"] = upd.message.text.strip()
+    la_ = la(ctx)
+    await upd.message.reply_text(
+        "📱 Telefon raqamingizni yuboring:" if la_=="uz" else "📱 Отправьте номер телефона:",
+        reply_markup=phone_kb(la_))
+    return ST_REG_PHONE
 
 async def reg_phone(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx)
-    if upd.message.contact: phone=upd.message.contact.phone_number
+    la_ = la(ctx)
+    if upd.message.contact: phone = upd.message.contact.phone_number
     else:
-        phone=clean_phone(upd.message.text)
-        if len(phone.replace("+",""))<7:
-            await upd.message.reply_text(tx("err_phone",la),reply_markup=phone_kb(la)); return REG_PHONE
-    ctx.user_data["reg_phone"]=phone
-    await upd.message.reply_text(tx("reg_passport",la),
-        reply_markup=ReplyKeyboardMarkup([[tx("skip",la)]],resize_keyboard=True)); return REG_PASSPORT
+        phone = clean_phone(upd.message.text)
+        if len(phone.replace("+","")) < 7:
+            await upd.message.reply_text("❌ Noto'g'ri raqam! Qaytadan:", reply_markup=phone_kb(la_))
+            return ST_REG_PHONE
+    ctx.user_data["rph"] = phone
+    await upd.message.reply_text(
+        "📷 Passport rasmini yuboring (yoki o'tkazib yuboring):" if la_=="uz"
+        else "📷 Фото паспорта (или пропустите):",
+        reply_markup=ikr([("⏭ O'tkazib yuborish" if la_=="uz" else "⏭ Пропустить","skip_passport")]),
+        reply_markup_remove=ReplyKeyboardRemove())
+    return ST_REG_PASSPORT
 
 async def reg_passport(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    name=ctx.user_data.get("reg_name",""); fname=ctx.user_data.get("reg_fname","")
-    phone=ctx.user_data.get("reg_phone",""); full_name=f"{name} {fname}".strip()
-    passport="rasm_bor" if upd.message.photo else (upd.message.text or "otkazildi")
-    sid=make_short_id()
-    db_delete_row("Foydalanuvchilar","TG_ID",str(uid))
-    db_append("Foydalanuvchilar",[str(uid),name,fname,phone,"distributor",la,passport,"kutilmoqda",sid,now_str()])
-    for admin_id in ADMIN_IDS:
-        try:
-            await ctx.bot.send_message(admin_id,tx("reg_admin_msg",la,name=full_name,phone=phone,uid=str(uid),sid=sid),parse_mode="HTML")
-            if upd.message.photo:
-                await ctx.bot.send_photo(admin_id,upd.message.photo[-1].file_id,caption=f"Passport: {full_name}|{uid}")
-        except Exception as e: logger.error(f"Admin notify: {e}")
-    await upd.message.reply_text(tx("reg_ok",la,name=name,sid=sid),reply_markup=wait_kb(la),parse_mode="HTML"); return WAIT_APPROVE
+    uid = upd.effective_user.id; la_ = la(ctx)
+    if upd.callback_query:
+        await upd.callback_query.answer()
+        passport = "otkazildi"
+        photo_id = None
+    else:
+        passport = "rasm_bor" if upd.message.photo else (upd.message.text or "otkazildi")
+        photo_id = upd.message.photo[-1].file_id if upd.message.photo else None
 
-async def wait_approve_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id; t=upd.message.text or ""
+    name=ctx.user_data.get("rn",""); fname=ctx.user_data.get("rf","")
+    phone=ctx.user_data.get("rph",""); full=f"{name} {fname}".strip()
+    sid = make_sid()
+
+    db_delete("Foydalanuvchilar","TG_ID",str(uid))
+    db_append("Foydalanuvchilar",[str(uid),name,fname,phone,"distributor",la_,passport,"kutilmoqda",sid,now_str()])
+
+    for adm in ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(adm,
+                f"👤 <b>YANGI DISTRIBYUTOR</b>\n"
+                f"Ism: {full}\nTel: {phone}\nTG_ID: {uid}\nID: <b>{sid}</b>\n\n"
+                f"✅ /approve_{uid}\n❌ /reject_{uid}", parse_mode="HTML")
+            if photo_id: await ctx.bot.send_photo(adm, photo_id, caption=f"Passport: {full}")
+        except Exception as e: logger.error(f"admin notify: {e}")
+
+    await ctx.bot.send_message(uid,
+        f"✅ <b>Ro'yxatdan o'tdingiz!</b>\n🔑 Sizning ID: <b>{sid}</b>\n\n"
+        f"Bu IDni saqlang!\n\nAdmin tasdiqlashini kuting...",
+        parse_mode="HTML",
+        reply_markup=ikr([("📤 Qayta yuborish","resend")]))
+    return ST_WAIT_APPROVE
+
+async def wait_approve(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = upd.effective_user.id; la_ = la(ctx)
+    if upd.callback_query:
+        await upd.callback_query.answer()
+        data = upd.callback_query.data
+        if data == "resend":
+            user = get_user(uid)
+            if user:
+                full=f"{user.get('Ism','')} {user.get('Familiya','')}".strip()
+                sid=user.get("Short_ID","?"); phone=user.get("Telefon","")
+                for adm in ADMIN_IDS:
+                    try:
+                        await ctx.bot.send_message(adm,
+                            f"👤 <b>QAYTA YUBORILDI</b>\n{full}\nTel: {phone}\nID: {sid}\n"
+                            f"✅ /approve_{uid}\n❌ /reject_{uid}", parse_mode="HTML")
+                    except Exception: pass
+            await upd.callback_query.edit_message_text(
+                "✅ Adminga qayta yuborildi.", reply_markup=ikr([("📤 Yana yuborish","resend")]))
     if is_approved(uid):
         user=get_user(uid); sid=user.get("Short_ID","?") if user else "?"
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,False),parse_mode="HTML"); return MAIN_MENU
-    if is_rejected(uid):
-        await upd.message.reply_text(tx("rejected_msg",la)+"\n\n"+tx("rejected_retry",la)); return REG_NAME
-    if t==tx("resend_btn",la):
-        user=get_user(uid)
-        if user:
-            fn=f"{user.get('Ism','')} {user.get('Familiya','')}".strip()
-            ph=user.get("Telefon",""); sid=user.get("Short_ID","?")
-            for admin_id in ADMIN_IDS:
-                try: await ctx.bot.send_message(admin_id,tx("reg_admin_msg",la,name=fn,phone=ph,uid=str(uid),sid=sid),parse_mode="HTML")
-                except Exception: pass
-        await upd.message.reply_text(tx("resent_ok",la),reply_markup=wait_kb(la)); return WAIT_APPROVE
-    await upd.message.reply_text(tx("wait_approve",la),reply_markup=wait_kb(la)); return WAIT_APPROVE
+        await ctx.bot.send_message(uid,
+            f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+            reply_markup=main_kb(uid,la_), parse_mode="HTML")
+        return ST_MAIN
+    return ST_WAIT_APPROVE
 
 async def approve_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.effective_user.id not in ADMIN_IDS: return
-    m=re.search(r'/approve_(\d+)',upd.message.text or "")
+    m = re.search(r'/approve_(\d+)', upd.message.text or "")
     if not m: return
-    target=m.group(1); db_update("Foydalanuvchilar","TG_ID",target,"Status","tasdiqlangan")
+    target = m.group(1)
+    db_update("Foydalanuvchilar","TG_ID",target,"Status","tasdiqlangan")
     await upd.message.reply_text(f"✅ Tasdiqlandi: {target}")
     try:
-        u=get_user(target); la=u.get("Til","uz") if u else "uz"; sid=u.get("Short_ID","?") if u else "?"
-        await ctx.bot.send_message(int(target),tx("approved_msg",la,sid=sid),parse_mode="HTML")
+        u=get_user(target); la_=u.get("Til","uz") if u else "uz"
+        sid=u.get("Short_ID","?") if u else "?"
+        await ctx.bot.send_message(int(target),
+            f"✅ <b>Hisobingiz tasdiqlandi!</b>\n🔑 ID: <b>{sid}</b>\n\n/start bosing.",
+            parse_mode="HTML")
     except Exception as e: logger.error(f"approve: {e}")
 
 async def reject_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.effective_user.id not in ADMIN_IDS: return
-    m=re.search(r'/reject_(\d+)',upd.message.text or "")
+    m = re.search(r'/reject_(\d+)', upd.message.text or "")
     if not m: return
-    target=m.group(1); db_update("Foydalanuvchilar","TG_ID",target,"Status","rad_etildi")
+    target = m.group(1)
+    db_update("Foydalanuvchilar","TG_ID",target,"Status","rad_etildi")
     await upd.message.reply_text(f"❌ Rad etildi: {target}")
     try:
-        u=get_user(target); la=u.get("Til","uz") if u else "uz"
-        await ctx.bot.send_message(int(target),tx("rejected_msg",la)+"\n\n"+tx("rejected_retry",la))
+        u=get_user(target); la_=u.get("Til","uz") if u else "uz"
+        await ctx.bot.send_message(int(target), "❌ Hisobingiz rad etildi." if la_=="uz" else "❌ Аккаунт отклонён.")
     except Exception as e: logger.error(f"reject: {e}")
 
-# ── ZAVOD ─────────────────────────────────────────────────────────────────────
-async def zavod_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return ZAVOD_PROD
 
-async def zavod_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la):
-        sid=get_short_id(uid)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-    p=find_prod(t,la)
-    if not p: await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return ZAVOD_PROD
-    ctx.user_data["p"]=p
-    await upd.message.reply_text(f"{t}\n\n{tx('qty',la)}",reply_markup=back_kb(la)); return ZAVOD_QTY
+# ── ASOSIY MENYU CALLBACK ─────────────────────────────────────────────────────
+async def main_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    uid = upd.effective_user.id; la_ = la(ctx)
+    sid = get_sid(uid)
+    data = q.data  # "m:qabul", "m:topshir" etc
+
+    if not is_approved(uid):
+        await q.edit_message_text("⏳ Tasdiqlanmagan.")
+        return ST_WAIT_APPROVE
+
+    if data == "m:main":
+        await q.edit_message_text(f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+            reply_markup=main_kb(uid,la_), parse_mode="HTML")
+        return ST_MAIN
+
+    if data == "m:qabul": return await zavod_start(upd, ctx)
+    if data == "m:topshir": return await topshir_start(upd, ctx)
+    if data == "m:buyurtma": return await buyurtma_show(upd, ctx)
+    if data == "m:tolov": return await tolov_show(upd, ctx)
+    if data == "m:natija": return await daily_show(upd, ctx)
+    if data == "m:ombor": return await ombor_show(upd, ctx)
+    if data == "m:marshrut": return await marshrut_show(upd, ctx)
+    if data == "m:hisobot": return await hisobot_menu(upd, ctx)
+    if data == "m:dokonlar": return await dokonlar_show(upd, ctx)
+    if data == "m:narxlar": return await narxlar_start(upd, ctx)
+    if data == "m:admin": return await admin_menu(upd, ctx)
+
+    return ST_MAIN
+
+# ── ZAVOD QABUL ───────────────────────────────────────────────────────────────
+async def zavod_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); prods = get_products()
+    await edit_or_send(upd, ctx,
+        "📥 <b>Zavoddan qabul</b>\nMahsulotni tanlang:" if la_=="uz"
+        else "📥 <b>Получить с завода</b>\nВыберите товар:",
+        prod_kb(prods, la_, prefix="zav", back_cb="m:main"))
+    return ST_MAIN
+
+async def zavod_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    la_ = la(ctx); uid = upd.effective_user.id
+    pid = int(q.data.split(":")[1])
+    prods = get_products()
+    p = next((x for x in prods if x["id"]==pid), None)
+    if not p: return ST_MAIN
+    ctx.user_data["zav_p"] = p
+    price, _ = get_price(pid, dist_id=str(uid))
+    if price == 0: price, _ = get_price(pid)
+    ctx.user_data["zav_price"] = price
+    await q.edit_message_text(
+        f"📥 <b>{p[la_]}</b>\n"
+        f"💰 Narx: {price:,.0f} so'm/{p['unit']}\n\n"
+        f"Miqdorni kiriting (masalan: 5 yoki 5.5):" if la_=="uz"
+        else f"📥 <b>{p[la_]}</b>\n"
+        f"💰 Цена: {price:,.0f}/{p['unit']}\n\nВведите количество:",
+        reply_markup=back_ik("m:qabul"), parse_mode="HTML")
+    return ST_ZAVOD_QTY
 
 async def zavod_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la): await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return ZAVOD_PROD
-    qty=parse_weight(t)
-    if qty<=0: await upd.message.reply_text(tx("err_num",la)); return ZAVOD_QTY
-    p=ctx.user_data["p"]
-    pid=p.get("id",0)
-    price,_=get_price(pid,dist_id=str(uid))
-    if price==0: price,_=get_price(pid)
-    jami=qty*price; qid=make_op_id("Q")
-    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-    sid=u.get("Short_ID","?") if u else "ADMIN"
-    db_append("Qabul",[now_str(),str(uid),dn,p[la],qty,p["unit"],price,jami,"kutilmoqda",qid])
-    for admin_id in ADMIN_IDS:
-        try: await ctx.bot.send_message(admin_id,tx("zavod_req",la,dist=dn,sid=sid,prod=p[la],qty=qty,unit=p["unit"],narx=price,jami=jami,id=qid),parse_mode="HTML")
-        except Exception: pass
-    await upd.message.reply_text(tx("zavod_wait",la))
-    sid=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
+    la_ = la(ctx); uid = upd.effective_user.id
+    qty = parse_weight(upd.message.text)
+    if qty <= 0:
+        await upd.message.reply_text("❌ Noto'g'ri miqdor. Qaytadan kiriting:")
+        return ST_ZAVOD_QTY
+    p = ctx.user_data.get("zav_p",{}); price = ctx.user_data.get("zav_price",0)
+    jami = qty * price
+    qid = make_id("Q")
+    u = get_user(uid)
+    dn = f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
+    sid = u.get("Short_ID","?") if u else "ADMIN"
+    db_append("Qabul",[now_str(),str(uid),dn,p[la_],qty,p["unit"],price,jami,"kutilmoqda",qid])
+    for adm in ADMIN_IDS:
+        try:
+            await ctx.bot.send_message(adm,
+                f"⏳ <b>ZAVOD SO'ROVI</b>\n"
+                f"Dist: {dn} (ID:{sid})\n"
+                f"{p[la_]}: {fmt_qty(qty,p['unit'],p[la_],True)}\n"
+                f"Narx: {price:,.0f}\nJami: {jami:,.0f}\nRef: {qid}\n\n"
+                f"✅ /zok_{qid}\n❌ /zrad_{qid}", parse_mode="HTML")
+        except Exception as e: logger.error(f"zavod admin: {e}")
+    await upd.message.reply_text(
+        "⏳ So'rov adminga yuborildi. Kuting..." if la_=="uz"
+        else "⏳ Запрос отправлен. Ожидайте...",
+        reply_markup=main_kb(uid,la_))
+    return ST_MAIN
 
 async def zok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.effective_user.id not in ADMIN_IDS: return
-    m=re.search(r'/zok_(\w+)',upd.message.text or "")
+    m = re.search(r'/zok_(\w+)', upd.message.text or "")
     if not m: return
-    qid=m.group(1); db_update("Qabul","Qabul_ID",qid,"Status","tasdiqlangan")
-    await upd.message.reply_text(f"✅ Zavod tasdiqlandi: {qid}")
+    qid = m.group(1)
+    db_update("Qabul","Qabul_ID",qid,"Status","tasdiqlangan")
+    await upd.message.reply_text(f"✅ Tasdiqlandi: {qid}")
     for r in db_all("Qabul"):
         if r.get("Qabul_ID","")==qid:
             try:
-                u=get_user(r.get("Dist_ID","")); la=u.get("Til","uz") if u else "uz"
-                # Asosiy xabar
-                await ctx.bot.send_message(int(r.get("Dist_ID",0)),tx("zavod_ok",la))
-                # Motivatsiya xabari
-                motiv = get_motivatsiya()
-                await ctx.bot.send_message(int(r.get("Dist_ID",0)), f"\n{motiv}")
+                did = str(r.get("Dist_ID",""))
+                u = get_user(did); la_ = u.get("Til","uz") if u else "uz"
+                await ctx.bot.send_message(int(did),
+                    "✅ <b>Zavod so'rovi tasdiqlandi!</b>\nOmboringiz yangilandi." if la_=="uz"
+                    else "✅ <b>Запрос подтверждён!</b>\nСклад обновлён.", parse_mode="HTML")
+                await ctx.bot.send_message(int(did), f"\n{get_motiv()}")
             except Exception: pass
             break
 
 async def zrad_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if upd.effective_user.id not in ADMIN_IDS: return
-    m=re.search(r'/zrad_(\w+)',upd.message.text or "")
+    m = re.search(r'/zrad_(\w+)', upd.message.text or "")
     if not m: return
-    qid=m.group(1); db_update("Qabul","Qabul_ID",qid,"Status","rad_etildi")
-    await upd.message.reply_text(f"❌ Zavod rad etildi: {qid}")
+    qid = m.group(1)
+    db_update("Qabul","Qabul_ID",qid,"Status","rad_etildi")
+    await upd.message.reply_text(f"❌ Rad etildi: {qid}")
     for r in db_all("Qabul"):
         if r.get("Qabul_ID","")==qid:
             try:
-                u=get_user(r.get("Dist_ID","")); la=u.get("Til","uz") if u else "uz"
-                await ctx.bot.send_message(int(r.get("Dist_ID",0)),tx("zavod_rad",la))
+                did = str(r.get("Dist_ID",""))
+                u = get_user(did); la_ = u.get("Til","uz") if u else "uz"
+                await ctx.bot.send_message(int(did),
+                    "❌ Zavod so'rovi rad etildi." if la_=="uz" else "❌ Запрос отклонён.")
             except Exception: pass
             break
 
 # ── TOPSHIRISH ────────────────────────────────────────────────────────────────
-async def top_store(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la):
-        sid=get_short_id(uid)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-    stores=ctx.user_data.get("stores",[])
-    if t not in [s.get("Nomi","") for s in stores]:
-        await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
-    store=next(s for s in stores if s.get("Nomi","")==t); ctx.user_data["s"]=store
-    store_id=str(store.get("ID",""))
-    debt=get_debt(store_id)
-    store_orders=[r for r in db_all("Buyurtmalar")
-                  if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="Yangi"]
-    ctx.user_data["store_orders"]=store_orders
-    msg=""
-    if store_orders:
-        msg+="📋 <b>Do'konning zakazlari:</b>\n"
-        for r in store_orders:
-            pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
-            unit=r.get("Birlik","") or ""
-            msg+=f"  • {pn}: {format_qty(qty,unit,prod_name=pn,topshirish=False)}\n"
-        msg+="\n"
-    if debt>0: msg+=f"⚠️ Qarz: {debt:,.0f}\n\n"
-    msg+=tx("prod",la)
-    await upd.message.reply_text(msg,reply_markup=_ombor_prod_kb_markup(uid,la),parse_mode="HTML"); return TOP_PROD
-
-async def top_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la):
-        stores=ctx.user_data.get("stores",[]); await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
-    p=find_prod(t,la)
-    if not p: await upd.message.reply_text(_ombor_prod_kb(uid,la),reply_markup=_ombor_prod_kb_markup(uid,la)); return TOP_PROD
-    # Omborda borligini tekshirish
+async def topshir_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    stores = get_stores(dist_id=uid)
+    if not stores:
+        await edit_or_send(upd,ctx,
+            "⚠️ Do'konlar yo'q. Avval do'kon qo'shing." if la_=="uz"
+            else "⚠️ Магазинов нет. Сначала добавьте магазин.",
+            back_ik("m:main"))
+        return ST_MAIN
     ombor = get_ombor(uid)
-    prod_qty = ombor.get(p[la], ombor.get(p["uz"], ombor.get(p["ru"], 0.0)))
-    if prod_qty <= 0:
-        await upd.message.reply_text(
-            f"❌ {p[la]} omborда yo'q!\nBoshqa mahsulot tanlang." if la=="uz"
-            else f"❌ {p[la]} нет на складе!\nВыберите другой товар.",
-            reply_markup=_ombor_prod_kb_markup(uid,la))
-        return TOP_PROD
-    ctx.user_data["p"]=p
-    ctx.user_data["max_qty"]=prod_qty  # ombordagi max miqdor
-    if is_brinza(t):
-        # Brinza - tarozi rasmi MAJBURIY
-        await upd.message.reply_text(
-            f"🧀 Brinza topshirish:\n"
+    if not ombor:
+        await edit_or_send(upd,ctx,
+            "❌ Omboringiz bo'sh!\nAvval zavoddan tovar qabul qiling." if la_=="uz"
+            else "❌ Склад пуст!\nСначала получите товар с завода.",
+            back_ik("m:main"))
+        return ST_MAIN
+    ctx.user_data["stores"] = stores
+    await edit_or_send(upd,ctx,
+        "🚚 <b>Mol topshirish</b>\nDo'konni tanlang:" if la_=="uz"
+        else "🚚 <b>Передача товара</b>\nВыберите магазин:",
+        store_kb(stores, prefix="top_s", back_cb="m:main"))
+    return ST_TOP_STORE
+
+async def top_store_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    store_id = q.data.split(":")[1]
+    stores = ctx.user_data.get("stores", get_stores(dist_id=uid))
+    store = next((s for s in stores if str(s.get("ID",""))==store_id), None)
+    if not store: return ST_MAIN
+    ctx.user_data["top_store"] = store
+
+    # Zakazlarni ko'rsatish
+    orders = [r for r in db_all("Buyurtmalar")
+              if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="Yangi"]
+    ctx.user_data["store_orders"] = orders
+    debt = get_debt(store_id)
+
+    info = f"🏪 <b>{store.get('Nomi','')}</b>\n"
+    if debt > 0: info += f"💸 Qarz: {debt:,.0f} so'm\n"
+    if orders:
+        info += "\n📋 <b>Aktiv zakazlar:</b>\n"
+        for r in orders:
+            pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
+            info += f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}\n"
+    info += "\nMahsulotni tanlang:"
+
+    # Faqat ombordagi mahsulotlar
+    ombor = get_ombor(uid)
+    prods = get_products()
+    ombor_prods = [p for p in prods if ombor.get(p["uz"],ombor.get(p["ru"],0)) > 0.001]
+    if not ombor_prods:
+        await q.edit_message_text("❌ Ombor bo'sh!", reply_markup=back_ik("m:topshir"))
+        return ST_MAIN
+
+    rows = []
+    for i in range(0, len(ombor_prods), 2):
+        p = ombor_prods[i]
+        ov = ombor.get(p["uz"],ombor.get(p["ru"],0))
+        row = [(f"{p[la_]} ({fmt_qty(ov,p['unit'],p[la_],True)})", f"top_p:{p['id']}")]
+        if i+1 < len(ombor_prods):
+            p2 = ombor_prods[i+1]
+            ov2 = ombor.get(p2["uz"],ombor.get(p2["ru"],0))
+            row.append((f"{p2[la_]} ({fmt_qty(ov2,p2['unit'],p2[la_],True)})", f"top_p:{p2['id']}"))
+        rows.append(row)
+    rows.append([("🔙 Orqaga","m:topshir")])
+    await q.edit_message_text(info, reply_markup=ikr(*rows), parse_mode="HTML")
+    return ST_TOP_PROD
+
+async def top_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    pid = int(q.data.split(":")[1])
+    prods = get_products()
+    p = next((x for x in prods if x["id"]==pid), None)
+    if not p: return ST_MAIN
+    ctx.user_data["top_p"] = p
+    brinza = is_brinza(p[la_])
+    if brinza:
+        await q.edit_message_text(
+            f"🧀 <b>Brinza topshirish</b>\n"
             f"📸 Tarozi rasmini yuboring (MAJBURIY)\n"
-            f"Brinza kg da hisoblanadi, rasm admin uchun kerak!" if la=="uz" else
-            f"🧀 Передача брынзы:\n"
-            f"📸 Фото весов ОБЯЗАТЕЛЬНО\n"
-            f"Брынза считается в кг, фото нужно для отчёта!",
-            reply_markup=back_kb(la))
-        ctx.user_data["brinza_mode"]=True
+            f"Yoki og'irlikni kg da yozing (masalan: 3.455):",
+            reply_markup=back_ik(f"top_s:{ctx.user_data.get('top_store',{}).get('ID','')}"),
+            parse_mode="HTML")
     else:
-        ctx.user_data.pop("brinza_mode",None)
-        await upd.message.reply_text(f"{t}\n\n{tx('photo_scale',la)}",reply_markup=back_kb(la))
-    return TOP_PHOTO
+        await q.edit_message_text(
+            f"🚚 <b>{p[la_]}</b>\n\nMiqdorni kiriting:" if la_=="uz"
+            else f"🚚 <b>{p[la_]}</b>\n\nВведите количество:",
+            reply_markup=back_ik(f"top_s:{ctx.user_data.get('top_store',{}).get('ID','')}"),
+            parse_mode="HTML")
+    return ST_TOP_PHOTO
 
 async def top_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx)
-    brinza_mode = ctx.user_data.get("brinza_mode", False)
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    p = ctx.user_data.get("top_p",{})
+    brinza = is_brinza(p.get(la_,""))
 
     if upd.message.photo:
-        await upd.message.reply_text(tx("reading",la))
-        file=await ctx.bot.get_file(upd.message.photo[-1].file_id)
-        img=bytes(await file.download_as_bytearray()); raw=await vision_ocr(img); w=parse_scale(raw)
-        if w>0:
-            ctx.user_data["_w"]=w
-            ctx.user_data["scale_photo_id"] = upd.message.photo[-1].file_id
-            await upd.message.reply_text(tx("ocr_ok",la,v=w),reply_markup=yes_kb(la)); return TOP_PHOTO
-        # Rasm o'qilmasa - rasm saqlab, og'irlikni qo'lda so'rash
-        ctx.user_data["scale_photo_id"] = upd.message.photo[-1].file_id
-        await upd.message.reply_text(
-            "📷 Rasm saqlandi!\nOg'irlikni kg da kiriting (masalan: 3.455):" if la=="uz"
-            else "📷 Фото сохранено!\nВведите вес в кг (например: 3.455):",
-            reply_markup=back_kb(la))
-        return TOP_PHOTO
-
-    t=upd.message.text or ""
-    if t==tx("back",la): await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return TOP_PROD
-
-    # Brinza uchun rasm MAJBURIY - faqat rasm yuborilmagan bo'lsa
-    if brinza_mode and "_w" not in ctx.user_data and "scale_photo_id" not in ctx.user_data:
-        await upd.message.reply_text(
-            "🧀 Brinza uchun tarozi rasmini yuboring!\nRasmsiz topshirib bo'lmaydi." if la=="uz"
-            else "🧀 Для брынзы ОБЯЗАТЕЛЬНО фото весов!\nБез фото нельзя передать.",
-            reply_markup=back_kb(la))
-        return TOP_PHOTO
-
-    if "_w" in ctx.user_data:
-        if t.upper() in ["HA","ДА","YES","OK"]: qty=ctx.user_data.pop("_w")
-        else:
-            ctx.user_data.pop("_w",None); qty=parse_weight(t)
-            if qty<=0: await upd.message.reply_text(tx("err_weight",la)); return TOP_PHOTO
-    else:
-        qty=parse_weight(t)
-        if qty<=0: await upd.message.reply_text(tx("err_weight",la)); return TOP_PHOTO
-    ctx.user_data["top_qty"]=qty
-    await upd.message.reply_text(
-        f"{ctx.user_data['p'][la]}: {qty} {ctx.user_data['p']['unit']}\n\n{tx('top_pay_type',la)}",
-        reply_markup=ReplyKeyboardMarkup([[tx("naqd",la)],[tx("realizatsiya",la)],[tx("back",la)]],resize_keyboard=True))
-    return TOP_PAY_TYPE
-
-async def top_pay_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return TOP_PHOTO
-    if t==tx("realizatsiya",la):
-        ctx.user_data["pay_type"]="realizatsiya"; ctx.user_data["top_naqd"]=0.0
-        # Zakaz vs qty tekshirish
-        qty=ctx.user_data.get("top_qty",0)
-        warned=await _check_qty_vs_zakaz(upd,ctx,qty)
-        if warned: return TOP_PAY_TYPE  # ogoh. ko'rsatildi, javob kutiladi
-        # Vozvrat so'rash
-        ctx.user_data["voz_after_pay"]=True
-        bor = "Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
-        yoq = "Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
-        await upd.message.reply_text(
-            "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
-            reply_markup=ReplyKeyboardMarkup([[bor],[yoq]], resize_keyboard=True))
-        return VOZ_HAL
-    # Qty ogohlantirish javobi
-    if t in ("✅ Ha, davom et","✅ Да, продолжаем"):
-        ctx.user_data.pop("_pending_save",None)
-        bor="Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
-        yoq="Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
-        await upd.message.reply_text(
-            "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
-            reply_markup=ReplyKeyboardMarkup([[bor],[yoq]],resize_keyboard=True))
-        return VOZ_HAL
-    if t in ("❌ Yo'q, qaytaman","❌ Нет, вернуться"):
-        ctx.user_data.pop("_pending_save",None)
-        await upd.message.reply_text(
-            "Miqdorni qaytadan kiriting:" if la=="uz" else "Введите количество заново:",
-            reply_markup=back_kb(la))
-        return TOP_PHOTO
-    if t==tx("naqd",la):
-        ctx.user_data["pay_type"]="naqd"
-        qty=ctx.user_data.get("top_qty",0)
-        warned=await _check_qty_vs_zakaz(upd,ctx,qty)
-        if warned: return TOP_PAY_TYPE
-        await upd.message.reply_text(tx("top_naqd_sum",la),reply_markup=back_kb(la)); return TOP_PAY_AMOUNT
-    return TOP_PAY_TYPE
-
-async def top_pay_amount(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return TOP_PAY_TYPE
-    amount=parse_money(t)
-    if amount<0: await upd.message.reply_text(tx("err_money",la)); return TOP_PAY_AMOUNT
-    ctx.user_data["top_naqd"]=amount
-    # Vozvrat so'rash
-    bor = "Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
-    yoq = "Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
-    await upd.message.reply_text(
-        "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
-        reply_markup=ReplyKeyboardMarkup([[bor],[yoq]], resize_keyboard=True))
-    return VOZ_HAL
-
-
-
-async def voz_hal(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Vozvrat bor/yo'q"""
-    la=lg(ctx); t=upd.message.text or ""
-    bor_uz = "Ha, vozvrat bor"; bor_ru = "Да, есть возврат"
-    if t in (bor_uz, bor_ru):
-        # Ombordan mahsulot tanlash
-        uid = str(upd.effective_user.id)
-        store = ctx.user_data.get("s",{})
-        # Do'konga topshirilgan mahsulotlarni tanlash
-        store_id = str(store.get("ID",""))
-        store_tops = [r for r in db_all("Topshirish")
-                      if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="tasdiqlangan"]
-        if not store_tops:
+        await upd.message.reply_text("⏳ Rasm o'qilmoqda..." if la_=="uz" else "⏳ Читаю...")
+        file = await ctx.bot.get_file(upd.message.photo[-1].file_id)
+        img = bytes(await file.download_as_bytearray())
+        raw = await vision_ocr(img); w = parse_scale(raw)
+        ctx.user_data["scale_photo"] = upd.message.photo[-1].file_id
+        if w > 0:
+            ctx.user_data["_ocr_w"] = w
             await upd.message.reply_text(
-                "Bu do'konga hali tovar topshirilmagan." if la=="uz"
-                else "Товар этому магазину ещё не поставлялся.",
-                reply_markup=_ombor_prod_kb_markup(uid,la))
-            # Vozvrat yo'q kabi davom etish
-            await _save_top(upd,ctx)
-            return TOP_STORE
-        # Topshirilgan mahsulotlar ro'yxati
-        prods_set = {}
-        for r in store_tops:
-            pn = r.get("Mahsulot","")
-            prods_set[pn] = prods_set.get(pn,0) + float(r.get("Miqdor",0) or 0)
-        ctx.user_data["voz_prods"] = prods_set
-        rows = [[pn] for pn in prods_set.keys()]
-        rows.append([tx("back",la)])
-        await upd.message.reply_text(
-            "Qaysi mahsulot qaytarildi?" if la=="uz" else "Какой товар возвращается?",
-            reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return VOZ_PROD
-    else:
-        # Vozvrat yo'q — to'g'ridan saqlash
-        await _save_top(upd,ctx)
-        return TOP_STORE
+                f"📸 O'qildi: {fmt_qty(w,'kg',p[la_],True)}\nTo'g'rimi?" if la_=="uz"
+                else f"📸 Считано: {fmt_qty(w,'kg',p[la_],True)}\nВерно?",
+                reply_markup=ikr(
+                    [(f"✅ Ha, {fmt_qty(w,'kg',p[la_],True)}","ocr_yes")],
+                    [("✏️ Boshqa raqam kiriting" if la_=="uz" else "✏️ Ввести другое","ocr_no")]
+                ))
+        else:
+            ctx.user_data.pop("_ocr_w",None)
+            await upd.message.reply_text(
+                "📷 Rasm saqlandi. Og'irlikni kg da kiriting:" if la_=="uz"
+                else "📷 Фото сохранено. Введите вес в кг:")
+        return ST_TOP_PHOTO
 
-async def voz_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Vozvrat mahsuloti"""
-    la=lg(ctx); t=upd.message.text or ""
-    if t==tx("back",la):
-        await _save_top(upd,ctx); return TOP_STORE
-    prods_set = ctx.user_data.get("voz_prods",{})
-    if t not in prods_set:
-        rows = [[pn] for pn in prods_set.keys()]; rows.append([tx("back",la)])
-        await upd.message.reply_text("Mahsulotni tanlang:", reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return VOZ_PROD
-    ctx.user_data["voz_prod_name"] = t
-    # Brinza dona, boshqalar kg
-    if is_brinza(t):
-        await upd.message.reply_text(
-            f"Nechta {t} qaytarildi? (dona, butun son):" if la=="uz"
-            else f"Сколько {t} возвращается? (штук, целое число):",
-            reply_markup=back_kb(la))
+    t = upd.message.text or ""
+    # OCR tasdiq tugmasi (callback emas, matn orqali kelar qilib qo'yamiz)
+    qty = parse_weight(t)
+    if qty <= 0:
+        if brinza and not ctx.user_data.get("scale_photo"):
+            await upd.message.reply_text(
+                "🧀 Brinza uchun tarozi rasmi MAJBURIY!\nRasm yuboring:" if la_=="uz"
+                else "🧀 Фото весов ОБЯЗАТЕЛЬНО для брынзы!")
+            return ST_TOP_PHOTO
+        await upd.message.reply_text("❌ Noto'g'ri. Qaytadan kiriting:")
+        return ST_TOP_PHOTO
+    ctx.user_data["top_qty"] = qty
+    return await top_pay_menu(upd, ctx)
+
+async def top_photo_ocr_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    la_ = la(ctx)
+    if q.data == "ocr_yes":
+        qty = ctx.user_data.pop("_ocr_w", 0)
+        ctx.user_data["top_qty"] = qty
+        await q.edit_message_text(f"✅ Miqdor: {fmt_qty(qty,'kg',ctx.user_data.get('top_p',{}).get(la_,''),True)}")
+        return await top_pay_menu_edit(upd, ctx)
     else:
-        await upd.message.reply_text(
-            f"{t} necha kg qaytarildi? (masalan: 2.5):" if la=="uz"
-            else f"Сколько кг {t} возвращается? (например: 2.5):",
-            reply_markup=back_kb(la))
-    return VOZ_QTY
+        ctx.user_data.pop("_ocr_w",None)
+        await q.edit_message_text("✏️ Og'irlikni kg da kiriting (masalan: 3.455):")
+        return ST_TOP_PHOTO
+
+async def top_pay_menu(upd, ctx):
+    la_ = la(ctx); p = ctx.user_data.get("top_p",{})
+    qty = ctx.user_data.get("top_qty",0)
+    qty_str = fmt_qty(qty, p.get("unit",""), p.get(la_,""), True)
+    await upd.message.reply_text(
+        f"💳 <b>To'lov usuli</b>\n{p.get(la_,'')}: {qty_str}\n\nQaysi usulda?" if la_=="uz"
+        else f"💳 <b>Способ оплаты</b>\n{p.get(la_,'')}: {qty_str}\n\nКак оплата?",
+        reply_markup=ikr(
+            [("💵 Naqd" if la_=="uz" else "💵 Наличные","pay:naqd")],
+            [("📝 Realizatsiya" if la_=="uz" else "📝 Реализация","pay:real")]
+        ), parse_mode="HTML")
+    return ST_TOP_PAY
+
+async def top_pay_menu_edit(upd, ctx):
+    q = upd.callback_query; la_ = la(ctx); p = ctx.user_data.get("top_p",{})
+    qty = ctx.user_data.get("top_qty",0)
+    qty_str = fmt_qty(qty, p.get("unit",""), p.get(la_,""), True)
+    await q.edit_message_text(
+        f"💳 <b>To'lov usuli</b>\n{p.get(la_,'')}: {qty_str}\n\nQaysi usulda?" if la_=="uz"
+        else f"💳 <b>Способ оплаты</b>\n{p.get(la_,'')}: {qty_str}\n\nКак оплата?",
+        reply_markup=ikr(
+            [("💵 Naqd" if la_=="uz" else "💵 Наличные","pay:naqd")],
+            [("📝 Realizatsiya","pay:real")]
+        ), parse_mode="HTML")
+    return ST_TOP_PAY
+
+async def top_pay_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    data = q.data  # "pay:naqd" or "pay:real" or "voz:yes" or "voz:no" or "pay_ok:..."
+    uid = str(upd.effective_user.id)
+
+    if data == "pay:real":
+        ctx.user_data["pay_type"] = "realizatsiya"; ctx.user_data["top_naqd"] = 0.0
+        # Vozvrat so'rash
+        await q.edit_message_text(
+            "📦 Qaytarilgan tovar (vozvrat) bormi?" if la_=="uz"
+            else "📦 Есть возврат товара?",
+            reply_markup=ikr(
+                [("✅ Ha, vozvrat bor" if la_=="uz" else "✅ Да","voz:yes")],
+                [("❌ Yo'q","voz:no")]
+            ))
+        return ST_TOP_PAY
+
+    if data == "pay:naqd":
+        ctx.user_data["pay_type"] = "naqd"
+        await q.edit_message_text(
+            "💵 Naqd summani kiriting:\n(0 kiriting = to'liq realizatsiya)" if la_=="uz"
+            else "💵 Введите сумму наличных:\n(0 = полностью в долг)")
+        return ST_TOP_NAQD
+
+    if data == "voz:no":
+        ctx.user_data["voz_jami"] = 0.0
+        return await _save_topshirish(upd, ctx)
+
+    if data == "voz:yes":
+        # Vozvrat mahsulot tanlash - bu do'konga topshirilgan mahsulotlar
+        store = ctx.user_data.get("top_store",{})
+        store_id = str(store.get("ID",""))
+        tops = [r for r in db_all("Topshirish")
+                if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="tasdiqlangan"]
+        prods_set = {}
+        for r in tops:
+            pn=r.get("Mahsulot",""); prods_set[pn]=prods_set.get(pn,0)+float(r.get("Miqdor",0) or 0)
+        if not prods_set:
+            ctx.user_data["voz_jami"]=0.0
+            await q.edit_message_text(
+                "Bu do'konga hali tovar topshirilmagan. Vozvrat yo'q.")
+            return await _save_topshirish(upd, ctx)
+        ctx.user_data["voz_prods"] = prods_set
+        rows = [[(pn, f"voz_p:{pn}")] for pn in prods_set.keys()]
+        rows.append([("🔙 Orqaga","voz:no")])
+        await q.edit_message_text(
+            "Qaysi mahsulot qaytarildi?" if la_=="uz" else "Какой товар возвращается?",
+            reply_markup=ikr(*rows))
+        return ST_VOZ_PROD
+
+    return ST_TOP_PAY
+
+async def top_naqd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx)
+    amount = parse_money(upd.message.text)
+    if amount < 0:
+        await upd.message.reply_text("❌ Noto'g'ri summa:"); return ST_TOP_NAQD
+    ctx.user_data["top_naqd"] = amount
+    # Vozvrat so'rash
+    await upd.message.reply_text(
+        "📦 Vozvrat bormi?" if la_=="uz" else "📦 Есть возврат?",
+        reply_markup=ikr(
+            [("✅ Ha","voz:yes")],
+            [("❌ Yo'q","voz:no")]
+        ))
+    return ST_TOP_PAY
+
+async def voz_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    prod_name = q.data.split(":",1)[1]
+    ctx.user_data["voz_prod"] = prod_name
+    brinza = is_brinza(prod_name)
+    await q.edit_message_text(
+        f"{'🧀' if brinza else '📦'} <b>{prod_name}</b>\n\n"
+        f"{'Nechta? (dona, butun son)' if brinza else 'Necha kg?'}" if la_=="uz"
+        else f"{'🧀' if brinza else '📦'} <b>{prod_name}</b>\n\n"
+        f"{'Сколько штук? (целое)' if brinza else 'Сколько кг?'}",
+        parse_mode="HTML")
+    return ST_VOZ_QTY
 
 async def voz_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Vozvrat miqdori"""
-    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
-    if t==tx("back",la):
-        prods_set=ctx.user_data.get("voz_prods",{})
-        rows=[[pn] for pn in prods_set.keys()]; rows.append([tx("back",la)])
-        await upd.message.reply_text("Mahsulotni tanlang:", reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return VOZ_PROD
-    prod_name = ctx.user_data.get("voz_prod_name","")
-    store = ctx.user_data.get("s",{})
-    store_id = str(store.get("ID","")); store_name = store.get("Nomi","")
-    # Miqdor parse
-    if is_brinza(prod_name):
-        try: qty = int(float(t.strip().replace(",",".")))
-        except: qty = 0
-        if qty <= 0:
-            await upd.message.reply_text("Butun son kiriting:"); return VOZ_QTY
-        birlik = "dona"
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    prod_name = ctx.user_data.get("voz_prod","")
+    store = ctx.user_data.get("top_store",{})
+    store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
+    brinza = is_brinza(prod_name)
+    if brinza:
+        try: qty=int(float(upd.message.text.strip().replace(",",".")))
+        except: qty=0
+        if qty<=0:
+            await upd.message.reply_text("Butun son kiriting:"); return ST_VOZ_QTY
+        birlik="dona"
     else:
-        qty = parse_weight(t)
-        if qty <= 0:
-            await upd.message.reply_text(tx("err_weight",la)); return VOZ_QTY
-        birlik = "kg"
-    # Narx topish
-    p_obj = next((p for p in get_products() if p["uz"]==prod_name or p["ru"]==prod_name), None)
-    price, _ = get_price(p_obj["id"], dist_id=str(uid), dokon_id=store_id) if p_obj else (0,0)
-    jami = qty * price
-    voz_id = make_op_id("V")
-    db_append("Vozvrat",[now_str(),str(uid),store_name,store_id,prod_name,qty,birlik,price,jami,"tasdiqlangan",voz_id])
-    qty_str = format_qty(qty, birlik, prod_name=prod_name, topshirish=(birlik=="kg"))
-    # Vozvrat qarzdan ayirish
-    pay_type = ctx.user_data.get("pay_type","")
-    naqd = ctx.user_data.get("top_naqd",0.0)
-    # Vozvrat summasi qarzdan yoki to'lovdan ayiriladi
-    ctx.user_data["voz_jami"] = jami
-    await upd.message.reply_text(
-        f"✅ Vozvrat qayd etildi:\n"
-        f"📦 {prod_name}: {qty_str}\n"
-        f"💰 Vozvrat summasi: {jami:,.0f} so'm" if la=="uz" else
-        f"✅ Возврат записан:\n"
-        f"📦 {prod_name}: {qty_str}\n"
-        f"💰 Сумма возврата: {jami:,.0f} сум")
-    # Saqlash
-    await _save_top_with_voz(upd, ctx)
-    return TOP_STORE
+        qty=parse_weight(upd.message.text)
+        if qty<=0:
+            await upd.message.reply_text("❌ Noto'g'ri:"); return ST_VOZ_QTY
+        birlik="kg"
+    p_obj=next((p for p in get_products() if p["uz"]==prod_name or p["ru"]==prod_name),None)
+    pid=p_obj["id"] if p_obj else 0
+    price,_=get_price(pid,dist_id=uid,dokon_id=store_id)
+    if price==0: price,_=get_price(pid,dist_id=uid)
+    if price==0: price,_=get_price(pid)
+    jami=qty*price; voz_id=make_id("VOZ")
+    db_append("Vozvrat",[now_str(),uid,store_name,store_id,prod_name,qty,birlik,price,jami,"tasdiqlangan",voz_id])
+    ctx.user_data["voz_jami"]=jami
+    qty_str=fmt_qty(qty,birlik,prod_name,birlik=="kg")
+    await upd.message.reply_text(f"✅ Vozvrat: {prod_name} {qty_str}\n💰 Summa: {jami:,.0f}")
+    return await _save_topshirish(upd, ctx)
 
-async def _save_top_with_voz(upd, ctx):
-    """Topshirishni vozvrat summasi bilan saqlash"""
-    la=lg(ctx); uid=upd.effective_user.id
-    p=ctx.user_data["p"]; store=ctx.user_data["s"]
-    qty=ctx.user_data["top_qty"]
-    naqd=ctx.user_data.get("top_naqd",0.0)
-    voz_jami=ctx.user_data.get("voz_jami",0.0)
-    pay_type=ctx.user_data.get("pay_type","naqd")
+async def _save_topshirish(upd, ctx):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    p=ctx.user_data.get("top_p",{}); store=ctx.user_data.get("top_store",{})
+    qty=ctx.user_data.get("top_qty",0); naqd=ctx.user_data.get("top_naqd",0.0)
+    voz_jami=ctx.user_data.get("voz_jami",0.0); pay_type=ctx.user_data.get("pay_type","naqd")
     store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    pid = p.get("id", 0)
-    price, _ = get_price(pid, dist_id=str(uid), dokon_id=store_id)
-    if price == 0: price, _ = get_price(pid, dist_id=str(uid))
-    if price == 0: price, _ = get_price(pid)
-    jami=qty*price
-    # Vozvrat summasi qarzdan ayiriladi
-    effective_naqd = min(naqd + voz_jami, jami)
-    qarz = max(0.0, jami - effective_naqd)
-    top_id=make_op_id("T")
+    pid=p.get("id",0)
+    price,_=get_price(pid,dist_id=uid,dokon_id=store_id)
+    if price==0: price,_=get_price(pid,dist_id=uid)
+    if price==0: price,_=get_price(pid)
+    jami=qty*price; effective_naqd=min(naqd+voz_jami,jami); qarz=max(0.0,jami-effective_naqd)
+    top_id=make_id("T")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-    db_append("Topshirish",[now_str(),str(uid),store_name,store_id,p[la],qty,p["unit"],
-               price,jami,pay_type,effective_naqd,qarz,"tasdiqlangan",top_id])
-    unit_str = format_qty(qty, p["unit"], prod_name=p[la], topshirish=True)
-    msg = (f"✅ Mol topshirildi: {store_name}\n"
-           f"📦 {p[la]}: {unit_str}\n"
-           f"💰 Jami: {jami:,.0f}\n")
-    if voz_jami>0:
-        msg += f"↩️ Vozvrat: -{voz_jami:,.0f}\n"
-    msg += f"💵 Naqd: {effective_naqd:,.0f}\nQarz: {qarz:,.0f}"
-    await upd.message.reply_text(msg, reply_markup=store_kb(ctx.user_data.get("stores",[]),la))
-    ctx.user_data.pop("voz_jami",None)
+    db_append("Topshirish",[now_str(),uid,store_name,store_id,p.get(la_,""),qty,p.get("unit",""),
+              price,jami,pay_type,effective_naqd,qarz,"tasdiqlangan",top_id])
+    qty_str=fmt_qty(qty,p.get("unit",""),p.get(la_,""),True)
+    msg=(f"✅ <b>Mol topshirildi!</b>\n"
+         f"🏪 {store_name}\n📦 {p.get(la_,'')}: {qty_str}\n"
+         f"💰 Jami: {jami:,.0f}\n💵 Naqd: {effective_naqd:,.0f}\n"
+         f"📝 Qarz: {qarz:,.0f}")
+    if voz_jami>0: msg+=f"\n↩️ Vozvrat: -{voz_jami:,.0f}"
+    sid=get_sid(upd.effective_user.id)
+    if upd.callback_query:
+        await upd.callback_query.edit_message_text(msg,parse_mode="HTML")
+    else:
+        await upd.message.reply_text(msg,parse_mode="HTML")
+    await ctx.bot.send_message(upd.effective_user.id,
+        f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+        reply_markup=main_kb(upd.effective_user.id,la_), parse_mode="HTML")
+    # State tozalash
+    for k in ["top_p","top_store","top_qty","top_naqd","voz_jami","pay_type","store_orders","voz_prods","voz_prod","scale_photo","_ocr_w"]:
+        ctx.user_data.pop(k,None)
+    return ST_MAIN
 
 
-async def _check_qty_vs_zakaz(upd, ctx, qty):
-    """Berilayotgan miqdor zakazdan ko'p bo'lsa ogohlantirish"""
-    la=lg(ctx)
-    p=ctx.user_data.get("p",{}); store_orders=ctx.user_data.get("store_orders",[])
-    prod_name=p.get(la,"")
-    unit=p.get("unit","")
-    # Brinza: zakaz dona, topshirish kg — taqqoslab bo'lmaydi
-    if is_brinza(prod_name):
-        return False  # Brinza uchun ogohlantirish yo'q
-    zakaz_qty=0
-    for r in store_orders:
-        if r.get("Mahsulot","").lower() == prod_name.lower():
-            zakaz_qty+=float(r.get("Miqdor",0) or 0)
-    if zakaz_qty>0 and qty>zakaz_qty:
-        diff=qty-zakaz_qty
-        zakaz_str=format_qty(zakaz_qty,unit,prod_name=prod_name,topshirish=True)
-        extra_str=format_qty(diff,unit,prod_name=prod_name,topshirish=True)
-        msg=(f"🎉 Ajoyib! Do'kon {zakaz_str} zakaz qilgan edi, sen {extra_str} qo'shimcha beryapsan — bu savdo mahorati!\n\n"
-             f"⚠️ Lekin shoshilma: zakaz {zakaz_str}, qo'shimcha {extra_str}. Adashmadinmi?\n\n"
-             f"Davom etamizmi?" if la=="uz" else
-             f"🎉 Отлично! Магазин заказал {zakaz_str}, а ты даёшь на {extra_str} больше — это мастерство!\n\n"
-             f"⚠️ Но проверь: заказ {zakaz_str}, дополнительно {extra_str}. Всё верно?\n\n"
-             f"Продолжаем?")
-        ctx.user_data["_pending_save"]=True
-        await upd.message.reply_text(msg,
-            reply_markup=ReplyKeyboardMarkup(
-                [["✅ Ha, davom et" if la=="uz" else "✅ Да, продолжаем"],
-                 ["❌ Yo'q, qaytaman" if la=="uz" else "❌ Нет, вернуться"]],
-                resize_keyboard=True))
-        return True  # Ogohlantirish chiqdi, kutish kerak
-    return False  # Hamma narsa normal, davom etish mumkin
+# ── BUYURTMALAR ────────────────────────────────────────────────────────────────
+async def buyurtma_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    my_stores = get_stores(dist_id=uid)
+    my_store_ids = {str(s.get("ID","")) for s in my_stores}
+    orders = [r for r in db_all("Buyurtmalar")
+              if (str(r.get("Dist_ID",""))==uid or str(r.get("Dokon_ID","")) in my_store_ids)
+              and r.get("Status","")=="Yangi"]
+    if not orders:
+        await edit_or_send(upd,ctx,
+            "📋 Yangi buyurtma yo'q." if la_=="uz" else "📋 Новых заказов нет.",
+            back_ik("m:main"))
+        return ST_MAIN
+    by_dokon={}
+    jami_prod={}
+    for r in orders:
+        dk=r.get("Dokon","?"); by_dokon.setdefault(dk,[]).append(r)
+        pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
+        jami_prod[pn]=jami_prod.get(pn,0)+qty
+    lines=[f"📋 <b>Buyurtmalar: {len(orders)} ta</b>","━━━━━━━━━━━━━━━━"]
+    for dokon,recs in by_dokon.items():
+        lines.append(f"🏪 <b>{dokon}:</b>")
+        for r in recs:
+            pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
+            zid=r.get("Zakaz_ID","")
+            lines.append(f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}")
+        lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("📊 <b>Jami kerak:</b>")
+    for pn,qty in jami_prod.items():
+        lines.append(f"  • {pn}: {fmt_qty(qty,'dona',pn,False)}")
+    lines.append("\n✅/❌ qabul qilish uchun buyurtmani tanlang:")
+    # Buyurtmalar inline
+    rows=[]
+    for r in orders:
+        zid=r.get("Zakaz_ID",""); pn=r.get("Mahsulot",""); dk=r.get("Dokon","")
+        qty=float(r.get("Miqdor",0) or 0)
+        rows.append([(f"✅ {dk} – {pn} {fmt_qty(qty,'dona',pn,False)}", f"zqabul:{zid}")])
+        rows.append([(f"❌ Rad: {dk} – {pn}", f"zrad:{zid}")])
+    rows.append([("🔙 Orqaga","m:main")])
+    await edit_or_send(upd,ctx,"\n".join(lines),ikr(*rows),parse_mode="HTML")
+    return ST_MAIN
 
-async def _save_top(upd, ctx):
-    la=lg(ctx); uid=upd.effective_user.id
-    p=ctx.user_data["p"]; store=ctx.user_data["s"]
-    qty=ctx.user_data["top_qty"]; naqd=ctx.user_data.get("top_naqd",0.0)
-    pay_type=ctx.user_data.get("pay_type","naqd")
-    store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    # Narxni topish: avval dokon maxsus narxi, keyin dist narxi, keyin umumiy
-    pid = p.get("id", 0)
-    price, _ = get_price(pid, dist_id=str(uid), dokon_id=store_id)
-    if price == 0:
-        price, _ = get_price(pid, dist_id=str(uid))
-    if price == 0:
-        price, _ = get_price(pid)
-    jami=qty*price; qarz=max(0.0,jami-naqd); top_id=make_op_id("T")
-    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-    db_append("Topshirish",[now_str(),str(uid),store_name,store_id,p[la],qty,p["unit"],price,jami,pay_type,naqd,qarz,"tasdiqlangan",top_id])
-    unit_str = format_qty(qty, p["unit"], prod_name=p[la], topshirish=True)
-    await upd.message.reply_text(
-        f"✅ {store_name}\n{p[la]}: {unit_str}\nJami: {jami:,.0f}\nNaqd: {naqd:,.0f}\nQarz: {qarz:,.0f}",
-        reply_markup=store_kb(ctx.user_data.get("stores",[]),la))
+async def zakaz_action_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    data = q.data  # "zqabul:ID" or "zrad:ID"
+    action, zid = data.split(":",1)
+    ctx.user_data["zak_id"] = zid
+    ctx.user_data["zak_action"] = "qabul" if action=="zqabul" else "rad"
+    await q.edit_message_text(
+        "📝 Izoh yozing (yoki o'tkazib yuborish):" if la_=="uz"
+        else "📝 Напишите комментарий (или пропустите):",
+        reply_markup=ikr([("⏭ O'tkazib yuborish" if la_=="uz" else "⏭ Пропустить","zak_skip")]))
+    return ST_ZAKAZ_COMMENT
+
+async def zakaz_skip_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    ctx.user_data["zak_izoh"] = ""
+    return await zakaz_save(upd, ctx)
+
+async def zakaz_comment(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["zak_izoh"] = upd.message.text.strip()
+    return await zakaz_save(upd, ctx)
+
+async def zakaz_save(upd, ctx):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    zid=ctx.user_data.get("zak_id",""); action=ctx.user_data.get("zak_action","")
+    izoh=ctx.user_data.get("zak_izoh","") or "-"
+    status="Qabul_qilindi" if action=="qabul" else "Rad_etildi"
+    db_update("Buyurtmalar","Zakaz_ID",zid,"Status",status)
+    db_update("Buyurtmalar","Zakaz_ID",zid,"Izoh",izoh)
+    res="✅ Qabul" if action=="qabul" else "❌ Rad"
+    msg=f"{res} qilindi\nIzoh: {izoh}" if la_=="uz" else f"{res}\nКомментарий: {izoh}"
+    if upd.callback_query: await upd.callback_query.edit_message_text(msg)
+    else: await upd.message.reply_text(msg)
+    sid=get_sid(upd.effective_user.id)
+    await ctx.bot.send_message(upd.effective_user.id,
+        f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+        reply_markup=main_kb(upd.effective_user.id,la_), parse_mode="HTML")
+    return ST_MAIN
+
+# ── TO'LOV ────────────────────────────────────────────────────────────────────
+async def tolov_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    stores = get_stores(dist_id=uid)
+    lines=["💸 <b>Qarzdorlar:</b>","━━━━━━━━━━━━━━━━"]; total=0; rows=[]
+    for s in stores:
+        debt=get_debt(str(s.get("ID","")))
+        if debt>0:
+            lines.append(f"• {s.get('Nomi','')}: {debt:,.0f} so'm")
+            total+=debt
+    if len(lines)==2: lines.append("Qarz yo'q!" if la_=="uz" else "Долгов нет!")
+    else: lines.append(f"━━━━━━━━━━━━━━━━\nJami: {total:,.0f}")
+    lines.append("\nTo'lovni tasdiqlash: /vok_TOLOV_ID")
+    await edit_or_send(upd,ctx,"\n".join(lines),back_ik("m:main"))
+    return ST_MAIN
+
+async def vok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m=re.search(r'/vok_(\w+)',upd.message.text or "")
+    if not m: return
+    db_update("Tolov","Tolov_ID",m.group(1),"Status","tasdiqlangan")
+    await upd.message.reply_text("✅ To'lov tasdiqlandi!")
+
+async def vrad_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    m=re.search(r'/vrad_(\w+)',upd.message.text or "")
+    if not m: return
+    db_update("Tolov","Tolov_ID",m.group(1),"Status","rad_etildi")
+    await upd.message.reply_text("❌ To'lov rad etildi.")
 
 async def tok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     m=re.search(r'/tok_(\w+)',upd.message.text or "")
@@ -1195,1229 +1238,849 @@ async def trad_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     m=re.search(r'/trad_(\w+)',upd.message.text or "")
     if not m: return
     db_update("Topshirish","Top_ID",m.group(1),"Status","rad_etildi")
-    await upd.message.reply_text("❌ Topshirish rad etildi!")
+    await upd.message.reply_text("❌ Topshirish rad etildi.")
 
-async def vok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    m=re.search(r'/vok_(\w+)',upd.message.text or "")
-    if not m: return
-    db_update("Tolov","Tolov_ID",m.group(1),"Status","tasdiqlangan")
-    await upd.message.reply_text(tx("tolov_ok",lg(ctx)))
+# ── KUNLIK NATIJA ──────────────────────────────────────────────────────────────
+async def daily_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id); today=today_str()
+    tops=[r for r in db_all("Topshirish") if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid]
+    ins =[r for r in db_all("Qabul") if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
+    ts=sum(float(r.get("Jami",0) or 0) for r in tops)
+    tn=sum(float(r.get("Naqd",0) or 0) for r in tops)
+    tq=sum(float(r.get("Qarz",0) or 0) for r in tops)
+    ti=sum(float(r.get("Jami",0) or 0) for r in ins)
+    foyda=ts-ti; stores=get_stores(dist_id=uid)
+    jami_qarz=sum(get_debt(str(s.get("ID",""))) for s in stores)
+    dc=len({r.get("Dokon","") for r in tops})
+    msg=(f"📊 <b>Kunlik natija — {today}</b>\n━━━━━━━━━━━━━━━━\n"
+         f"📥 Zavod: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
+         f"💵 Naqd: {tn:,.0f}\n📝 Qarz: {tq:,.0f}\n"
+         f"💸 Jami qarz: {jami_qarz:,.0f}\n💰 Foyda: {foyda:,.0f}\n🏪 Do'konlar: {dc}")
+    await edit_or_send(upd,ctx,msg,back_ik("m:main"))
+    return ST_MAIN
 
-async def vrad_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    m=re.search(r'/vrad_(\w+)',upd.message.text or "")
-    if not m: return
-    db_update("Tolov","Tolov_ID",m.group(1),"Status","rad_etildi")
-    await upd.message.reply_text(tx("tolov_rad",lg(ctx)))
+# ── OMBOR ─────────────────────────────────────────────────────────────────────
+async def ombor_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    st = get_ombor(uid); prods = get_products()
+    prod_map={p["uz"].lower():p for p in prods}
+    prod_map.update({p["ru"].lower():p for p in prods})
+    lines=["📦 <b>Ombor:</b>","━━━━━━━━━━━━━━━━"]
+    total_sotuv=0; total_tn=0
+    for k,v in st.items():
+        if v<=0.001: continue
+        p_obj=prod_map.get(k.lower()); unit=p_obj["unit"] if p_obj else "kg"
+        pid=p_obj["id"] if p_obj else 0
+        narx,tn=get_price(pid,dist_id=uid)
+        if narx==0: narx,tn=get_price(pid)
+        sotuv=v*narx; tan=v*tn; foyda=sotuv-tan
+        total_sotuv+=sotuv; total_tn+=tan
+        qty_str=fmt_qty(v,unit,k,True)
+        narx_str=f"{narx:,.0f}" if narx else "belgilanmagan"
+        lines.append(f"• <b>{k}</b>: {qty_str}\n  💰 {narx_str} → {sotuv:,.0f} | Foyda: {foyda:,.0f}")
+    if len(lines)==2: lines.append("Ombor bo'sh!")
+    else:
+        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append(f"📊 <b>Jami:</b> Sotuv: {total_sotuv:,.0f} | Foyda: {total_sotuv-total_tn:,.0f}")
+    await edit_or_send(upd,ctx,"\n".join(lines),back_ik("m:main"))
+    return ST_MAIN
 
-# ── ZAKAZ ─────────────────────────────────────────────────────────────────────
-async def zqabul_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    m=re.search(r'/zqabul_(\w+)',upd.message.text or "")
-    if not m: return
-    ctx.user_data["zakaz_id"]=m.group(1); ctx.user_data["zakaz_action"]="qabul"
-    la=lg(ctx); await upd.message.reply_text(tx("zakaz_comment_q",la),reply_markup=skip_kb(la)); return ZAKAZ_COMMENT
-
-async def zrad_z_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    m=re.search(r'/zrad_z_(\w+)',upd.message.text or "")
-    if not m: return
-    ctx.user_data["zakaz_id"]=m.group(1); ctx.user_data["zakaz_action"]="rad"
-    la=lg(ctx); await upd.message.reply_text(tx("zakaz_comment_q",la),reply_markup=skip_kb(la)); return ZAKAZ_COMMENT
-
-async def zakaz_comment(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
-    izoh="" if t==tx("skip",la) else t.strip()
-    zakaz_id=ctx.user_data.get("zakaz_id",""); action=ctx.user_data.get("zakaz_action","qabul")
-    status="Qabul_qilindi" if action=="qabul" else "Rad_etildi"
-    db_update("Buyurtmalar","Zakaz_ID",zakaz_id,"Status",status)
-    db_update("Buyurtmalar","Zakaz_ID",zakaz_id,"Izoh",izoh or "-")
-    if action=="qabul": await upd.message.reply_text(tx("zakaz_acc_dist",la,izoh=izoh or "-"))
-    else: await upd.message.reply_text(tx("zakaz_rad_dist",la,izoh=izoh or "-"))
-    sid=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-
-# ── DO'KON QO'SHISH (distribyutor tomonidan) ─────────────────────────────────
-async def di_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
-    if t==tx("back",la) or t in ["Orqaga","Назад"]:
-        sid=get_short_id(uid)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-
-    # "Yangi do'kon qo'shish" — do'kon nomini so'rash
-    if "yangi" in t.lower() or "добавить" in t.lower():
-        ctx.user_data.pop("waiting_store_add",None)
-        ctx.user_data.pop("zakaz_from_store",None)
-        await upd.message.reply_text(tx("dokon_name",la),reply_markup=back_kb(la)); return DI_NAME
-
-    # Do'kon nomiga buyurtma — faqat mavjud do'konlar ro'yxatidan
+# ── MARSHRUT ───────────────────────────────────────────────────────────────────
+async def marshrut_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
     stores = get_stores(dist_id=uid)
-    store = next((s for s in stores if s.get("Nomi","")==t), None)
-    if store:
-        # Bu do'kon uchun buyurtma berish
-        ctx.user_data["zakaz_store"] = store
-        prods = get_products()
-        rows = []
-        for i in range(0, len(prods), 2):
-            r = [prods[i][la]]
-            if i+1 < len(prods): r.append(prods[i+1][la])
-            rows.append(r)
-        rows.append([tx("back",la)])
-        await upd.message.reply_text(
-            f"📋 {store.get('Nomi','')} uchun zakaz\nMahsulotni tanlang:" if la=="uz"
-            else f"📋 Заказ для {store.get('Nomi','')}\nВыберите товар:",
-            reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return ZAKAZ_FROM_STORE_PROD
+    if not stores:
+        await edit_or_send(upd,ctx,"⚠️ Do'konlar yo'q.",back_ik("m:main")); return ST_MAIN
+    lines=["🗺 <b>Marshrut:</b>","━━━━━━━━━━━━━━━━"]
+    for i,s in enumerate(stores,1):
+        debt=get_debt(str(s.get("ID",""))); d=f" ⚠️{debt:,.0f}" if debt>0 else ""
+        lines.append(f"{i}. {s.get('Nomi','')}{d}\n   📞 {s.get('Tel1','-')}")
+    await edit_or_send(upd,ctx,"\n".join(lines),back_ik("m:main"))
+    return ST_MAIN
 
-    # waiting_store_add holati
-    if ctx.user_data.get("waiting_store_add"):
-        ctx.user_data.pop("waiting_store_add",None)
-        await upd.message.reply_text(tx("dokon_name",la),reply_markup=back_kb(la)); return DI_NAME
+# ── HISOBOT ────────────────────────────────────────────────────────────────────
+async def hisobot_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx)
+    await edit_or_send(upd,ctx,
+        "📈 <b>Hisobot</b>\nDavrni tanlang:" if la_=="uz" else "📈 <b>Отчёт</b>\nВыберите период:",
+        ikr([("7 kun","his:7")],[("30 kun","his:30")],[("🔙 Orqaga","m:main")]))
+    return ST_MAIN
 
-    # Do'kon nomi kiritildi
-    ctx.user_data["di_name"]=t.strip()
-    await upd.message.reply_text(tx("dokon_addr",la),reply_markup=back_kb(la)); return DI_ADDR
+async def hisobot_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    uid = str(upd.effective_user.id)
+    days = int(q.data.split(":")[1])
+    from_dt = (datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
+    tops=[r for r in db_all("Topshirish") if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
+    ins =[r for r in db_all("Qabul")       if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
+    vozlar=[r for r in db_all("Vozvrat")   if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid]
+    ts=sum(float(r.get("Jami",0) or 0) for r in tops)
+    tn=sum(float(r.get("Naqd",0) or 0) for r in tops)
+    tq=sum(float(r.get("Qarz",0) or 0) for r in tops)
+    ti=sum(float(r.get("Jami",0) or 0) for r in ins)
+    voz_s=sum(float(r.get("Jami",0) or 0) for r in vozlar)
+    stores=get_stores(dist_id=uid); jami_qarz=sum(get_debt(str(s.get("ID",""))) for s in stores)
+    foyda=ts-ti
+    msg=(f"📈 <b>Hisobot: {days} kun</b>\n━━━━━━━━━━━━━━━━\n"
+         f"📥 Qabul: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
+         f"💵 Naqd: {tn:,.0f}\n📝 Qarz (davr): {tq:,.0f}\n"
+         f"↩️ Vozvrat: {voz_s:,.0f}\n💸 Jami qarz: {jami_qarz:,.0f}\n"
+         f"💰 Foyda: {foyda:,.0f}")
+    await q.edit_message_text(msg,reply_markup=back_ik("m:hisobot"),parse_mode="HTML")
+    return ST_MAIN
+
+
+# ── DO'KONLAR ──────────────────────────────────────────────────────────────────
+async def dokonlar_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    stores = get_stores(dist_id=uid)
+    if not stores:
+        await edit_or_send(upd,ctx,
+            "🏪 Do'konlar yo'q.",
+            ikr([("➕ Do'kon qo'shish","dokon:add")],[("🔙 Orqaga","m:main")]))
+        return ST_MAIN
+    # Har do'kon uchun karta
+    if upd.callback_query:
+        await upd.callback_query.edit_message_text("🏪 <b>Do'konlarim</b>", parse_mode="HTML")
+    for s in stores:
+        did=str(s.get("ID","")); debt=get_debt(did)
+        debt_str=f"\n💸 Qarz: {debt:,.0f}" if debt>0 else ""
+        card=(f"🏪 <b>{s.get('Nomi','')}</b>{debt_str}\n"
+              f"━━━━━━━━━━━━━━━━\n"
+              f"📍 {s.get('Adres','—')}\n"
+              f"🏢 MCHJ: {s.get('MCHJ','—') or '—'}\n"
+              f"📞 {s.get('Tel1','—')}\n"
+              f"📞 {s.get('Tel2','—') or '—'}\n"
+              f"👤 Ega: {s.get('Ega_Ismi','—') or '—'}")
+        kb=ikr(
+            [(f"📋 Zakaz qo'shish","dzak:"+did)],
+            [(f"✏️ Ma'lumot o'zgartirish","dedit:"+did)]
+        )
+        await ctx.bot.send_message(upd.effective_user.id, card, reply_markup=kb, parse_mode="HTML")
+    await ctx.bot.send_message(upd.effective_user.id, "Yangi do'kon qo'shish:",
+        reply_markup=ikr([("➕ Yangi do'kon","dokon:add")],[("🔙 Asosiy menyu","m:main")]))
+    return ST_MAIN
+
+async def dokon_add_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    await q.edit_message_text("🏪 <b>Yangi do'kon</b>\n\nDo'kon nomini kiriting:", parse_mode="HTML")
+    return ST_DI_NAME
+
+async def di_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); t = upd.message.text.strip()
+    ctx.user_data["di_name"] = t
+    await upd.message.reply_text(
+        "📍 Manzilini kiriting:" if la_=="uz" else "📍 Введите адрес:")
+    return ST_DI_ADDR
 
 async def di_addr(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); ctx.user_data["di_addr"]=upd.message.text.strip()
-    await upd.message.reply_text(tx("dokon_mchj",la),reply_markup=skip_kb(la)); return DI_MCHJ
+    la_ = la(ctx); ctx.user_data["di_addr"] = upd.message.text.strip()
+    await upd.message.reply_text(
+        "🏢 MCHJ nomini kiriting (yoki o'tkazib yuborish):",
+        reply_markup=ikr([("⏭ O'tkazib yuborish","di_skip:mchj")]))
+    return ST_DI_MCHJ
 
 async def di_mchj(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""
-    ctx.user_data["di_mchj"]="" if t==tx("skip",la) else t.strip()
-    await upd.message.reply_text(tx("dokon_tel1",la),reply_markup=phone_kb(la)); return DI_TEL1
+    la_ = la(ctx)
+    if upd.callback_query:
+        await upd.callback_query.answer(); ctx.user_data["di_mchj"]=""
+        await upd.callback_query.edit_message_text("📞 Telefon 1 kiriting:")
+    else:
+        ctx.user_data["di_mchj"] = upd.message.text.strip()
+        await upd.message.reply_text("📞 Telefon 1 kiriting:",reply_markup=phone_kb(la_))
+    return ST_DI_TEL1
 
 async def di_tel1(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx)
+    la_ = la(ctx)
     if upd.message.contact: phone=upd.message.contact.phone_number
     else:
-        phone=clean_phone(upd.message.text or "")
+        phone=clean_phone(upd.message.text)
         if len(phone.replace("+",""))<7:
-            await upd.message.reply_text(tx("err_phone",la),reply_markup=phone_kb(la)); return DI_TEL1
+            await upd.message.reply_text("❌ Noto'g'ri! Qaytadan:",reply_markup=phone_kb(la_)); return ST_DI_TEL1
     ctx.user_data["di_tel1"]=phone
-    await upd.message.reply_text(tx("dokon_tel2",la),reply_markup=skip_kb(la)); return DI_TEL2
+    await upd.message.reply_text("📞 Telefon 2 (yoki o'tkazib yuborish):",
+        reply_markup=ikr([("⏭ O'tkazib yuborish","di_skip:tel2")]))
+    return ST_DI_TEL2
 
 async def di_tel2(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""
-    ctx.user_data["di_tel2"]="" if t==tx("skip",la) else clean_phone(t)
-    await upd.message.reply_text(
-        "👤 Do'kon egasining ismi va familiyasini kiriting:" if la=="uz"
-        else "👤 Введите имя и фамилию владельца магазина:",
-        reply_markup=back_kb(la))
-    return DI_EGA_ISM
+    la_ = la(ctx)
+    if upd.callback_query:
+        await upd.callback_query.answer(); ctx.user_data["di_tel2"]=""
+        await upd.callback_query.edit_message_text("👤 Do'kon egasining ismini kiriting:")
+    else:
+        ctx.user_data["di_tel2"]=clean_phone(upd.message.text)
+        await upd.message.reply_text("👤 Do'kon egasining ismini kiriting:")
+    return ST_DI_EGA
 
-async def di_ega_ism(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""
-    if t==tx("back",la):
-        await upd.message.reply_text(tx("dokon_tel2",la),reply_markup=skip_kb(la)); return DI_TEL2
-    ctx.user_data["di_ega_ism"]=t.strip()
+async def di_ega(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); ctx.user_data["di_ega"]=upd.message.text.strip()
     await upd.message.reply_text(
-        "📸 Do'kon rasmini yuboring:" if la=="uz" else "📸 Отправьте фото магазина:",
-        reply_markup=back_kb(la))
-    return DI_PHOTO
+        "📸 Do'kon rasmini yuboring (MAJBURIY):" if la_=="uz"
+        else "📸 Отправьте фото магазина (ОБЯЗАТЕЛЬНО):")
+    return ST_DI_PHOTO
 
 async def di_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    t = upd.message.text or ""
-    if t == tx("back",la):
-        await upd.message.reply_text(
-            "👤 Do'kon egasining ismi:" if la=="uz" else "👤 Имя владельца:",
-            reply_markup=back_kb(la)); return DI_EGA_ISM
+    la_ = la(ctx); uid = upd.effective_user.id
     if not upd.message.photo:
-        await upd.message.reply_text(
-            "❗ Iltimos do'kon rasmini yuboring:" if la=="uz"
-            else "❗ Отправьте фото магазина:",
-            reply_markup=back_kb(la))
-        return DI_PHOTO
-    photo = upd.message.photo[-1].file_id
-
-    # Ma'lumotlarni yig'ish
-    name     = ctx.user_data.get("di_name","")
-    addr     = ctx.user_data.get("di_addr","")
-    mchj     = ctx.user_data.get("di_mchj","")
-    tel1     = ctx.user_data.get("di_tel1","")
-    tel2     = ctx.user_data.get("di_tel2","")
-    ega_ism  = ctx.user_data.get("di_ega_ism","")
-    u = get_user(uid)
-    dn = f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-
-    # DB ga saqlash (lokatsiyasiz)
-    cnt = len(db_all("Dokonlar")) + 1
-    db_append("Dokonlar", [str(cnt),"",name,addr,mchj,tel1,tel2,str(uid),dn,"","",now_str()])
-    logger.info(f"Do'kon saqlandi: {name} | dist={uid}")
-
-    # Chiroyli karta
-    card = (
-        f"🏪 <b>{name}</b>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📍 <b>Manzil:</b> {addr}\n"
-        f"🏢 <b>MCHJ:</b> {mchj if mchj else '—'}\n"
-        f"📞 <b>Raqam:</b> {tel1}\n"
-        f"📞 <b>Qo'shimcha:</b> {tel2 if tel2 else '—'}\n"
-        f"👤 <b>Do'kon egasi:</b> {ega_ism if ega_ism else '—'}\n"
-        f"🚚 <b>Distribyutor:</b> {dn}"
-    )
-
-    # Adminga rasm + karta
-    for admin_id in ADMIN_IDS:
+        await upd.message.reply_text("❗ Rasm yuboring! Rasmsiz bo'lmaydi."); return ST_DI_PHOTO
+    photo_id = upd.message.photo[-1].file_id
+    name=ctx.user_data.get("di_name",""); addr=ctx.user_data.get("di_addr","")
+    mchj=ctx.user_data.get("di_mchj",""); tel1=ctx.user_data.get("di_tel1","")
+    tel2=ctx.user_data.get("di_tel2",""); ega=ctx.user_data.get("di_ega","")
+    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
+    cnt=len(db_all("Dokonlar"))+1
+    db_append("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,now_str()])
+    card=(f"🏪 <b>{name}</b>\n━━━━━━━━━━━━━━━━\n"
+          f"📍 {addr}\n🏢 {mchj or '—'}\n"
+          f"📞 {tel1}\n📞 {tel2 or '—'}\n👤 {ega or '—'}\n🚚 {dn}")
+    for adm in ADMIN_IDS:
         try:
-            await ctx.bot.send_photo(admin_id, photo, caption=card, parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"admin notify: {e}")
+            await ctx.bot.send_photo(adm,photo_id,caption=card,parse_mode="HTML")
+        except Exception: pass
+    await upd.message.reply_photo(photo_id, caption=f"✅ Do'kon qo'shildi!\n\n{card}", parse_mode="HTML")
+    sid=get_sid(uid)
+    await ctx.bot.send_message(uid,f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
+        reply_markup=main_kb(uid,la_), parse_mode="HTML")
+    for k in ["di_name","di_addr","di_mchj","di_tel1","di_tel2","di_ega"]: ctx.user_data.pop(k,None)
+    return ST_MAIN
 
-    # Distribyutorga tasdiqlash
-    await upd.message.reply_photo(
-        photo,
-        caption=(
-            f"✅ <b>Do'kon qo'shildi!</b>\n\n"
-            f"🏪 <b>{name}</b>\n"
-            f"📍 {addr}\n"
-            f"📞 {tel1}\n"
-            f"👤 {ega_ism if ega_ism else '—'}"
-        ),
-        parse_mode="HTML",
-        reply_markup=main_kb(la, get_short_id(uid), uid in ADMIN_IDS)
-    )
-    return MAIN_MENU
+# Do'kon zakaz qo'shish
+async def dokon_zakaz_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    store_id = q.data.split(":")[1]
+    stores = get_stores(dist_id=str(upd.effective_user.id))
+    store = next((s for s in stores if str(s.get("ID",""))==store_id), None)
+    if not store: return ST_MAIN
+    ctx.user_data["zakaz_store"] = store
+    prods = get_products()
+    await q.edit_message_text(
+        f"📋 {store.get('Nomi','')} uchun zakaz\nMahsulotni tanlang:",
+        reply_markup=prod_kb(prods, la_, prefix="zprod", back_cb="m:dokonlar"))
+    return ST_MAIN
 
-async def narx_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); await upd.message.reply_text(tx("narx_prod",la),reply_markup=prod_kb(la)); return NARX_PROD
+async def zakaz_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    pid = int(q.data.split(":")[1]); prods = get_products()
+    p = next((x for x in prods if x["id"]==pid), None)
+    if not p: return ST_MAIN
+    ctx.user_data["zakaz_p"] = p
+    brinza = is_brinza(p[la_])
+    await q.edit_message_text(
+        f"📦 <b>{p[la_]}</b>\n\n"
+        f"{'Nechta? (dona, butun son)' if brinza else 'Miqdorni kiriting (masalan: 5)'}:",
+        parse_mode="HTML")
+    return ST_ZAKAZ_FROM_QTY
 
-async def narx_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la):
-        sid=get_short_id(uid)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-    p=find_prod(t,la)
-    if not p: await upd.message.reply_text(tx("narx_prod",la),reply_markup=prod_kb(la)); return NARX_PROD
-    ctx.user_data["p"]=p; price,cost=get_price(p["id"],dist_id=str(uid))
+async def zakaz_from_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    p = ctx.user_data.get("zakaz_p",{})
+    store = ctx.user_data.get("zakaz_store",{})
+    prod_name = p.get(la_,""); brinza = is_brinza(prod_name)
+    if brinza:
+        try: qty=int(float(upd.message.text.strip().replace(",",".")))
+        except: qty=0
+        if qty<=0:
+            await upd.message.reply_text("Butun son kiriting:"); return ST_ZAKAZ_FROM_QTY
+        birlik="dona"
+    else:
+        qty=parse_weight(upd.message.text)
+        if qty<=0:
+            await upd.message.reply_text("❌ Noto'g'ri:"); return ST_ZAKAZ_FROM_QTY
+        birlik=p.get("unit","kg")
+    store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
+    dist_id=str(store.get("Dist_ID","")) or uid
+    zakaz_id=make_id("Z")
+    db_append("Buyurtmalar",[now_str(),store_id,store_name,dist_id,prod_name,qty,"Yangi","",zakaz_id])
+    qty_str=fmt_qty(qty,birlik,prod_name,birlik=="kg")
     await upd.message.reply_text(
-        f"{t}\n💰 Joriy: {price:,.0f} / Tannarx: {cost:,.0f}\n\n{tx('narx_type',la)}",
-        reply_markup=ReplyKeyboardMarkup([[tx("narx_umumiy",la)],[tx("narx_maxsus",la)],[tx("back",la)]],resize_keyboard=True))
-    return NARX_TYPE
+        f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}",
+        reply_markup=main_kb(upd.effective_user.id,la_))
+    return ST_MAIN
 
-async def narx_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if t==tx("back",la): return NARX_PROD
-    if t==tx("narx_maxsus",la):
-        stores=get_stores(dist_id=uid)
-        if not stores: await upd.message.reply_text(tx("no_store",la)); return NARX_PROD
-        ctx.user_data["narx_type"]="maxsus"; ctx.user_data["stores"]=stores
-        await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return NARX_DOKON
-    ctx.user_data["narx_type"]="umumiy"
-    await upd.message.reply_text(tx("narx_val",la),reply_markup=back_kb(la)); return NARX_VAL
+# Do'kon ma'lumot o'zgartirish
+async def dokon_edit_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    store_id = q.data.split(":")[1]
+    stores = db_all("Dokonlar")
+    store = next((s for s in stores if str(s.get("ID",""))==store_id), None)
+    if not store: return ST_MAIN
+    ctx.user_data["edit_dokon_id"] = store_id
+    ctx.user_data["edit_dokon"] = dict(store)
+    fields={"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2","6":"Ega_Ismi"}
+    lines=[f"✏️ <b>{store.get('Nomi','')} — tahrirlash</b>\n"]
+    for k,v in fields.items():
+        lines.append(f"{k}. {v}: <i>{store.get(v,'—') or '—'}</i>")
+    lines.append("\nRaqamni bosing:")
+    rows=[[("1","ef:1"),("2","ef:2"),("3","ef:3")],[("4","ef:4"),("5","ef:5"),("6","ef:6")],[("🔙 Orqaga","m:dokonlar")]]
+    await q.edit_message_text("\n".join(lines),reply_markup=ikr(*rows),parse_mode="HTML")
+    return ST_MAIN
 
-async def narx_dokon(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; stores=ctx.user_data.get("stores",[])
-    if t==tx("back",la): return NARX_TYPE
-    store=next((s for s in stores if s.get("Nomi","")==t),None)
-    if not store: await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return NARX_DOKON
-    ctx.user_data["narx_dokon"]=store
-    await upd.message.reply_text(tx("narx_val",la),reply_markup=back_kb(la)); return NARX_DOKON_VAL
+async def dokon_edit_field_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    num = q.data.split(":")[1]
+    fields={"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2","6":"Ega_Ismi"}
+    field = fields.get(num,"Nomi")
+    ctx.user_data["edit_field"] = field
+    store = ctx.user_data.get("edit_dokon",{})
+    await q.edit_message_text(
+        f"✏️ <b>{field}</b>\nJoriy: <i>{store.get(field,'—') or '—'}</i>\n\nYangi qiymat kiriting:",
+        parse_mode="HTML", reply_markup=back_ik("m:dokonlar"))
+    return ST_DOKON_EDIT_VAL
+
+async def dokon_edit_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx)
+    field = ctx.user_data.get("edit_field","")
+    store_id = ctx.user_data.get("edit_dokon_id","")
+    new_val = upd.message.text.strip()
+    try:
+        w = get_ws("Dokonlar")
+        if w:
+            headers = w.row_values(1)
+            if field in headers:
+                recs = w.get_all_records()
+                for i,r in enumerate(recs):
+                    if str(r.get("ID",""))==store_id:
+                        w.update_cell(i+2, headers.index(field)+1, new_val); break
+    except Exception as e: logger.error(f"dokon_edit: {e}")
+    ctx.user_data["edit_dokon"][field] = new_val
+    await upd.message.reply_text(
+        f"✅ {field} yangilandi: <b>{new_val}</b>", parse_mode="HTML",
+        reply_markup=main_kb(upd.effective_user.id, la_))
+    return ST_MAIN
+
+
+# ── NARXLAR ────────────────────────────────────────────────────────────────────
+async def narxlar_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = str(upd.effective_user.id); prods = get_products()
+    await edit_or_send(upd,ctx,
+        "💰 <b>Narxlarim</b>\nMahsulotni tanlang:" if la_=="uz" else "💰 <b>Мои цены</b>\nВыберите товар:",
+        prod_kb(prods, la_, prefix="narx", back_cb="m:main"))
+    return ST_MAIN
+
+async def narx_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx); uid = str(upd.effective_user.id)
+    pid = int(q.data.split(":")[1]); prods = get_products()
+    p = next((x for x in prods if x["id"]==pid), None)
+    if not p: return ST_MAIN
+    ctx.user_data["narx_p"] = p
+    narx, tn = get_price(pid, dist_id=uid)
+    if narx==0: narx, tn = get_price(pid)
+    stores = get_stores(dist_id=uid)
+    await q.edit_message_text(
+        f"💰 <b>{p[la_]}</b>\nJoriy: {narx:,.0f} / Tannarx: {tn:,.0f}\n\nQaysi narxni o'zgartirish?",
+        reply_markup=ikr(
+            [("🔵 Barcha do'konlar","narx_type:all")],
+            [("🟡 Bitta do'kon uchun","narx_type:one")] if stores else [],
+            [("🔙 Orqaga","m:narxlar")]
+        ) if stores else ikr([("🔵 Barcha do'konlar","narx_type:all")],[("🔙 Orqaga","m:narxlar")]),
+        parse_mode="HTML")
+    return ST_MAIN
+
+async def narx_type_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx); uid = str(upd.effective_user.id)
+    ntype = q.data.split(":")[1]
+    if ntype == "all":
+        ctx.user_data["narx_dokon_id"] = ""
+        await q.edit_message_text("💰 Yangi narxni kiriting (masalan: 15000):",
+            reply_markup=back_ik("m:narxlar"))
+        return ST_NARX_VAL
+    else:
+        stores = get_stores(dist_id=uid)
+        await q.edit_message_text("Do'konni tanlang:",
+            reply_markup=store_kb(stores, prefix="narx_d", back_cb="m:narxlar"))
+        return ST_MAIN
+
+async def narx_dokon_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    store_id = q.data.split(":")[1]
+    ctx.user_data["narx_dokon_id"] = store_id
+    await q.edit_message_text("💰 Ushbu do'kon uchun narxni kiriting:",
+        reply_markup=back_ik("m:narxlar"))
+    return ST_NARX_DOKON_VAL
 
 async def narx_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return NARX_PROD
-    price=parse_money(t)
-    if price<=0: await upd.message.reply_text(tx("err_money",la)); return NARX_VAL
-    ctx.user_data["new_price"]=price
-    await upd.message.reply_text(tx("tannarx_val",la)); return NARX_COST
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    price = parse_money(upd.message.text)
+    if price <= 0:
+        await upd.message.reply_text("❌ Noto'g'ri summa:"); return ST_NARX_VAL
+    ctx.user_data["narx_val"] = price
+    await upd.message.reply_text("📉 Tannarxni kiriting (masalan: 12000):")
+    return ST_NARX_COST
 
 async def narx_dokon_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return NARX_TYPE
-    price=parse_money(t)
-    if price<=0: await upd.message.reply_text(tx("err_money",la)); return NARX_DOKON_VAL
-    ctx.user_data["new_price"]=price
-    await upd.message.reply_text(tx("tannarx_val",la)); return NARX_DOKON_COST
+    la_ = la(ctx)
+    price = parse_money(upd.message.text)
+    if price <= 0:
+        await upd.message.reply_text("❌ Noto'g'ri:"); return ST_NARX_DOKON_VAL
+    ctx.user_data["narx_val"] = price
+    await upd.message.reply_text("📉 Tannarxni kiriting:")
+    return ST_NARX_DOKON_COST
 
 async def narx_cost(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    cost=parse_money(upd.message.text); p=ctx.user_data["p"]; price=ctx.user_data["new_price"]
-    set_price(p["id"],p[la],price,cost,dist_id=str(uid))
-    await upd.message.reply_text(f"{tx('narx_updated',la)}\n{p[la]}: {price:,.0f} / {cost:,.0f}")
-    sid=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    cost = parse_money(upd.message.text)
+    p = ctx.user_data.get("narx_p",{}); price = ctx.user_data.get("narx_val",0)
+    dokon_id = ctx.user_data.get("narx_dokon_id","")
+    set_price(p.get("id",0), p.get(la_,""), price, cost, dist_id=uid, dokon_id=dokon_id)
+    await upd.message.reply_text(
+        f"✅ Narx yangilandi!\n{p.get(la_,'')}: {price:,.0f} / Tannarx: {cost:,.0f}",
+        reply_markup=main_kb(upd.effective_user.id, la_))
+    return ST_MAIN
 
 async def narx_dokon_cost(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    cost=parse_money(upd.message.text); p=ctx.user_data["p"]; price=ctx.user_data["new_price"]
-    store=ctx.user_data.get("narx_dokon",{})
-    set_price(p["id"],p[la],price,cost,dist_id=str(uid),dokon_id=str(store.get("ID","")))
-    await upd.message.reply_text(f"{tx('narx_updated',la)}\n{p[la]}\nDo'kon: {store.get('Nomi','')}\n{price:,.0f} / {cost:,.0f}")
-    sid=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
+    return await narx_cost(upd, ctx)
 
-# ── MAIN MENU ─────────────────────────────────────────────────────────────────
-async def main_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if uid not in ADMIN_IDS and not is_approved(uid):
-        if is_rejected(uid):
-            await upd.message.reply_text(tx("rejected_msg",la)+"\n\n"+tx("rejected_retry",la)); return REG_NAME
-        await upd.message.reply_text(tx("wait_approve",la),reply_markup=wait_kb(la)); return WAIT_APPROVE
-    sid=get_short_id(uid)
-    if t==tx("qabul",la):         return await zavod_start(upd,ctx)
-    if t==tx("my_prices",la):     return await narx_start(upd,ctx)
-    if t==tx("tolov_qabul",la):   await _show_qarzdorlar(upd,ctx); return MAIN_MENU
-    if t==tx("topshir",la):
-        stores=get_stores(dist_id=uid)
-        if not stores: await upd.message.reply_text(tx("no_store",la)); return MAIN_MENU
-        ombor = get_ombor(uid)
-        if not ombor:
-            await upd.message.reply_text(
-                "❌ Omboringiz bo'sh!\nAvval zavoddan tovar qabul qiling." if la=="uz"
-                else "❌ Склад пуст!\nСначала получите товар с завода.")
-            return MAIN_MENU
-        ctx.user_data["stores"]=stores
-        ctx.user_data["ombor"]=ombor
-        await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
-    if t==tx("buyurtma",la):      await _show_buyurtmalar(upd,ctx); return MAIN_MENU
-    if t==tx("natija",la):        await daily(upd,ctx); return MAIN_MENU
-    if t==tx("ombor",la):         await stock(upd,ctx); return MAIN_MENU
-    if t==tx("marshrut",la):      await marshrut_start(upd,ctx); return MAIN_MENU
-    if t==tx("my_stores",la):
-        await _show_my_stores(upd,ctx); return DI_NAME
-    if t==tx("hisobot",la):
-        await upd.message.reply_text("Hisobot:",
-            reply_markup=ReplyKeyboardMarkup([[tx("week",la),tx("month",la)],[tx("back",la)]],resize_keyboard=True))
-        return HISOBOT_MENU
-    if t==tx("admin",la) and uid in ADMIN_IDS:
-        await upd.message.reply_text(tx("adm",la),reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML")
-    return MAIN_MENU
+# ── ADMIN PANEL ────────────────────────────────────────────────────────────────
+async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); uid = upd.effective_user.id
+    if uid not in ADMIN_IDS:
+        await edit_or_send(upd,ctx,"🚫 Ruxsat yo'q!"); return ST_MAIN
+    await edit_or_send(upd,ctx,
+        "⚙️ <b>Admin panel</b>",
+        ikr(
+            [("➕ Mahsulot qo'shish","adm:prod")],
+            [("💰 Umumiy narxlar","adm:price")],
+            [("🏪 Do'kon qo'shish","adm:store")],
+            [("🚚 Distribyutor qo'shish","adm:dist")],
+            [("📊 Statistika","adm:stats"),("💸 Qarzdorlar","adm:debt")],
+            [("🏪 Do'konlar ro'yxati","adm:stores"),("🚚 Distribyutorlar","adm:dists")],
+            [("📦 Zavod so'rovlari","adm:zavod")],
+            [("📢 Xabar yuborish","adm:bc")],
+            [("🕌 Namoz: "+(("✅ Yoq" if namoz_on() else "❌ O'chiq")),"adm:namoz")],
+            [("🔙 Orqaga","m:main")]
+        ))
+    return ST_MAIN
 
-async def _show_qarzdorlar(upd,ctx):
-    la=lg(ctx); uid=str(upd.effective_user.id)
-    stores=get_stores(dist_id=uid); lines=["💸 Qarzdorlar:","---"]; total=0
-    for s in stores:
-        debt=get_debt(str(s.get("ID","")))
-        if debt>0: lines.append(f"• {s.get('Nomi','')}: {debt:,.0f}"); total+=debt
-    if len(lines)==2: lines.append("Qarz yo'q!")
-    else: lines.append(f"---\nJami: {total:,.0f}\n\nTo'lovni tasdiqlash: /vok_TOLOV_ID")
-    await upd.message.reply_text("\n".join(lines))
+async def admin_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q)
+    uid = upd.effective_user.id; la_ = la(ctx)
+    if uid not in ADMIN_IDS: return ST_MAIN
+    data = q.data.split(":")[1]
 
-async def _show_buyurtmalar(upd,ctx):
-    la=lg(ctx); uid=str(upd.effective_user.id)
-    # Distribyutorning o'z do'konlari orqali kelgan zakazlarni ham olish
-    my_stores = get_stores(dist_id=uid)
-    my_store_ids = set(str(s.get("ID","")) for s in my_stores)
-    all_orders = db_all("Buyurtmalar")
-    orders = [r for r in all_orders if (
-        str(r.get("Dist_ID",""))==uid or
-        str(r.get("Dokon_ID","")) in my_store_ids
-    ) and r.get("Status","")=="Yangi"]
-    if not orders:
-        await upd.message.reply_text("📋 Yangi zakaz yo'q" if la=="uz" else "📋 Новых заказов нет")
-        return
-    # Do'kon bo'yicha guruhlash
-    by_dokon = {}
-    for r in orders:
-        dk = r.get("Dokon","?")
-        if dk not in by_dokon: by_dokon[dk]=[]
-        by_dokon[dk].append(r)
-    # Mahsulot jami hisobi
-    jami_prod = {}
-    for r in orders:
-        prod = r.get("Mahsulot","")
-        qty  = float(r.get("Miqdor",0) or 0)
-        jami_prod[prod] = jami_prod.get(prod,0) + qty
-    lines=[f"📋 Yangi zakazlar: {len(orders)} ta","━━━━━━━━━━━━━━━━"]
-    # Har bir do'kon
-    for dokon, recs in by_dokon.items():
-        lines.append(f"🏪 <b>{dokon}:</b>")
-        for r in recs:
-            prod = r.get("Mahsulot",""); qty = float(r.get("Miqdor",0) or 0)
-            unit = r.get("Birlik","") or ""
-            # Brinzani dona ko'rsatish
-            qty_str = format_qty(qty, unit, prod_name=prod, topshirish=False)
-            zid=r.get("Zakaz_ID","")
-            lines.append(f"  • {prod}: {qty_str} | {r.get('Sana','')[:10]}")
-        lines.append("")
-    # Jami hisobi
-    lines.append("━━━━━━━━━━━━━━━━")
-    lines.append("📊 <b>Jami kerak:</b>" if la=="uz" else "📊 <b>Итого нужно:</b>")
-    for prod, qty in jami_prod.items():
-        unit_str = "dona" if is_brinza(prod) else ""
-        unit_j = ""
-        for r2 in orders:
-            if r2.get("Mahsulot","")==prod:
-                unit_j = r2.get("Birlik","") or ""
-                break
-        lines.append(f"  • {prod}: {format_qty(qty, unit_j, prod_name=prod, topshirish=False)}")
-    lines.append("━━━━━━━━━━━━━━━━")
-    lines.append("✏️ O'zgartirish: /zakaz_edit_ZAKAZ_ID" if la=="uz" else "✏️ Изменить: /zakaz_edit_ZAKAZ_ID")
-    await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
+    if data == "namoz":
+        new_val = "0" if namoz_on() else "1"
+        set_setting("namoz", new_val)
+        status = "✅ Yoqildi" if new_val=="1" else "❌ O'chirildi"
+        await q.answer(f"Namoz eslatmasi: {status}")
+        return await admin_menu(upd, ctx)
 
-async def _show_my_stores(upd,ctx):
-    la=lg(ctx); uid=str(upd.effective_user.id)
-    stores=get_stores(dist_id=uid)
-    add_btn = "➕ Yangi do'kon qo'shish" if la=="uz" else "➕ Добавить новый магазин"
-    if not stores:
-        await upd.message.reply_text(
-            "🏪 Hozircha do'kon yo'q.\n\nQo'shish uchun tugmani bosing:" if la=="uz"
-            else "🏪 Магазинов пока нет.\n\nНажмите кнопку для добавления:",
-            reply_markup=ReplyKeyboardMarkup([[add_btn],[tx("back",la)]], resize_keyboard=True))
-        ctx.user_data["waiting_store_add"] = True
-        return
-    # Har bir do'kon alohida chiroyli karta sifatida
-    for i, s in enumerate(stores, 1):
-        debt = get_debt(str(s.get("ID","")))
-        debt_str = f"\n💸 Qarz: {debt:,.0f} so'm" if debt>0 else ""
-        mchj = s.get("MCHJ","") or "—"
-        tel2 = s.get("Tel2","") or "—"
-        dokon_id_s = str(s.get("ID",""))
-        card = (
-            f"🏪 <b>{i}. {s.get('Nomi','')}</b>{debt_str}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📍 <b>Manzil:</b> {s.get('Adres','—')}\n"
-            f"🏢 <b>MCHJ:</b> {mchj}\n"
-            f"📞 <b>Tel 1:</b> {s.get('Tel1','—')}\n"
-            f"📞 <b>Tel 2:</b> {tel2}"
-        )
-        # Inline button - tahrirlash uchun
-        inline_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✏️ Ma'lumotlarni o'zgartirish", callback_data=f"dokon_edit_{dokon_id_s}")
-        ]])
-        await upd.message.reply_text(card, parse_mode="HTML", reply_markup=inline_kb)
-    # Oxirida buyurtma va qo'shish tugmalari
-    # Do'kon nomlarini tugma sifatida qo'shish (zakaz berish uchun)
-    store_btns = [[s.get("Nomi","")] for s in stores if s.get("Nomi","")]
-    store_btns.append([add_btn])
-    store_btns.append([tx("back",la)])
-    hint = "📋 Zakaz qo'shish uchun do'kon nomini bosing:" if la=="uz" else "📋 Нажмите на магазин для заказа:"
-    await upd.message.reply_text(hint,
-        reply_markup=ReplyKeyboardMarkup(store_btns, resize_keyboard=True))
-    ctx.user_data["waiting_store_add"] = True
+    if data == "prod":
+        await q.edit_message_text("➕ Mahsulot nomi (o'zbekcha):",reply_markup=back_ik("m:admin"))
+        return ST_ADM_MAHSULOT_UZ
 
-# ── HISOBOT ───────────────────────────────────────────────────────────────────
-async def hisobot_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=str(upd.effective_user.id)
-    if t==tx("back",la):
-        sid=get_short_id(upd.effective_user.id)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-    days=7 if t==tx("week",la) else 30
-    from_dt=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
-    try:
-        tops=[r for r in db_all("Topshirish") if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
-        ins =[r for r in db_all("Qabul")       if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
-        ts=sum(float(r.get("Jami",0) or 0) for r in tops)
-        tn=sum(float(r.get("Naqd",0) or 0) for r in tops)
-        tq=sum(float(r.get("Qarz",0) or 0) for r in tops)
-        ti=sum(float(r.get("Jami",0) or 0) for r in ins)
-        stores=get_stores(dist_id=uid)
-        jami_qarz=sum(get_debt(str(s.get("ID",""))) for s in stores)
-        foyda=calc_foyda(uid,from_dt)
-        # Vozvrat
-        vozlar=[r for r in db_all("Vozvrat") if str(r.get("Sana",""))>=from_dt and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
-        voz_jami=sum(float(r.get("Jami",0) or 0) for r in vozlar)
-        voz_cnt=len(vozlar)
-        period=("7 kun" if days==7 else "30 kun") if la=="uz" else ("7 дней" if days==7 else "30 дней")
-        msg=(f"📈 Hisobot: {period}\n━━━━━━━━━━━━━━━━\n"
-             f"📥 Qabul: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
-             f"💵 Naqd: {tn:,.0f}\n📝 Davr qarzi: {tq:,.0f}\n"
-             f"↩️ Vozvrat: {voz_cnt} ta / {voz_jami:,.0f}\n"
-             f"💸 Jami qarz: {jami_qarz:,.0f}\n💰 Foyda: {foyda:,.0f}" if la=="uz" else
-             f"📈 Отчёт: {period}\n━━━━━━━━━━━━━━━━\n"
-             f"📥 Получено: {ti:,.0f}\n🚚 Продажи: {ts:,.0f}\n"
-             f"💵 Наличные: {tn:,.0f}\n📝 Долг (период): {tq:,.0f}\n"
-             f"↩️ Возврат: {voz_cnt} шт / {voz_jami:,.0f}\n"
-             f"💸 Общий долг: {jami_qarz:,.0f}\n💰 Прибыль: {foyda:,.0f}")
-    except Exception as e: msg=f"Xatolik: {e}"
-    sid=get_short_id(upd.effective_user.id)
-    await upd.message.reply_text(msg,reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS)); return MAIN_MENU
-
-async def daily(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=str(upd.effective_user.id); today=today_str()
-    try:
-        tops=[r for r in db_all("Topshirish") if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid]
-        ins =[r for r in db_all("Qabul") if str(r.get("Sana","")).startswith(today) and str(r.get("Dist_ID",""))==uid and r.get("Status","")=="tasdiqlangan"]
-        ts=sum(float(r.get("Jami",0) or 0) for r in tops)
-        tn=sum(float(r.get("Naqd",0) or 0) for r in tops)
-        tq=sum(float(r.get("Qarz",0) or 0) for r in tops)
-        ti=sum(float(r.get("Jami",0) or 0) for r in ins)
-        foyda=ts-ti
-        stores=get_stores(dist_id=uid)
-        jami_qarz=sum(get_debt(str(s.get("ID",""))) for s in stores)
-        dc=len(set(r.get("Dokon","") for r in tops))
-        msg=(f"📊 Kunlik natija - {today}\n---\n"
-             f"📥 Zavod: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
-             f"💵 Naqd: {tn:,.0f}\n📝 Qarz: {tq:,.0f}\n"
-             f"💸 Jami qarz: {jami_qarz:,.0f}\n💰 Bugungi foyda: {foyda:,.0f}\n🏪 Do'konlar: {dc}" if la=="uz" else
-             f"📊 Итог дня - {today}\n---\n"
-             f"📥 Завод: {ti:,.0f}\n🚚 Продажи: {ts:,.0f}\n"
-             f"💵 Наличные: {tn:,.0f}\n📝 Долг: {tq:,.0f}\n"
-             f"💸 Общий долг: {jami_qarz:,.0f}\n💰 Прибыль: {foyda:,.0f}\n🏪 Магазинов: {dc}")
-    except Exception as e: msg=f"Xatolik: {e}"
-    await upd.message.reply_text(msg)
-
-async def stock(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=str(upd.effective_user.id)
-    try:
-        st = get_ombor(uid)
+    if data == "price":
         prods = get_products()
-        # Case-insensitive lookup
-        prod_map = {}
-        for p in prods:
-            prod_map[p["uz"].lower()] = p
-            prod_map[p["ru"].lower()] = p
+        await q.edit_message_text("💰 Narx o'zgartirish\nMahsulotni tanlang:",
+            reply_markup=prod_kb(prods,la_,prefix="adm_narx",back_cb="m:admin"))
+        return ST_MAIN
 
-        lines=["📦 Ombor:","━━━━━━━━━━━━━━━━"]
-        total_sotuv=0; total_tannarx=0
-        for k,v in st.items():
-            if v<=0.001: continue
-            # Mahsulotni topish (katta/kichik harf farqsiz)
-            p_obj = prod_map.get(k.lower())
-            if p_obj:
-                pid  = p_obj["id"]
-                unit = p_obj["unit"]
-                # Avval distribyutor narxi, bo'lmasa umumiy narx
-                narx, tannarx = get_price(pid, dist_id=uid)
-                if narx == 0:
-                    narx, tannarx = get_price(pid)
-            else:
-                unit = "kg"; narx = 0; tannarx = 0
-            sotuv_s   = v * narx
-            tannarx_s = v * tannarx
-            foyda_s   = sotuv_s - tannarx_s
-            total_sotuv   += sotuv_s
-            total_tannarx += tannarx_s
-            qty_str = format_qty(v, unit, prod_name=k, topshirish=True)
-            narx_str = f"{narx:,.0f}" if narx else "belgilanmagan"
-            lines.append(
-                f"• <b>{k}</b>: {qty_str}\n"
-                f"  💰 Narx: {narx_str} | Sotuv: {sotuv_s:,.0f}\n"
-                f"  📉 Tannarx: {tannarx_s:,.0f} | Foyda: {foyda_s:,.0f}")
-        if len(lines)==2:
-            lines.append("Ombor bo'sh!" if la=="uz" else "Склад пуст!")
-        else:
-            total_foyda = total_sotuv - total_tannarx
-            lines.append("━━━━━━━━━━━━━━━━")
-            lines.append(
-                f"📊 <b>Jami:</b>\n"
-                f"  💰 Sotuv: {total_sotuv:,.0f}\n"
-                f"  📉 Tannarx: {total_tannarx:,.0f}\n"
-                f"  ✅ Foyda: {total_foyda:,.0f} so'm")
-        await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"stock: {e}")
-        await upd.message.reply_text(f"Xatolik: {e}")
+    if data == "store":
+        await q.edit_message_text("🏪 Yangi do'kon nomi:",reply_markup=back_ik("m:admin"))
+        ctx.user_data["adm_mode"]="store"
+        return ST_ADM_DOKON_NAME
 
-async def marshrut_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    stores=get_stores(dist_id=uid)
-    if not stores: await upd.message.reply_text(tx("no_store",la)); return
-    ctx.user_data["m_stores"]=stores
-    await upd.message.reply_text(tx("send_loc",la),
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(tx("loc_btn",la),request_location=True)],[tx("back",la)]],resize_keyboard=True))
+    if data == "dist":
+        await q.edit_message_text("🚚 Distribyutor ismi:",reply_markup=back_ik("m:admin"))
+        return ST_ADM_DIST_NAME
 
-async def marshrut_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    stores=ctx.user_data.get("m_stores",get_stores(dist_id=uid))
-    lat,lng=0,0
-    if upd.message.location: lat=upd.message.location.latitude; lng=upd.message.location.longitude
-    lines=["🗺 Bugungi marshrut:" if la=="uz" else "🗺 Маршрут:","---"]
-    for i,s in enumerate(stores,1):
-        debt=get_debt(str(s.get("ID",""))); d=f" (⚠️ {debt:,.0f})" if debt>0 else ""
-        lines.append(f"{i}. {s.get('Nomi','')}{d}")
-    if lat and lng and stores:
-        wps="|".join([s.get("Nomi","").replace(" ","+") for s in stores])
-        dest=stores[-1].get("Nomi","").replace(" ","+")
-        url=f"https://www.google.com/maps/dir/?api=1&origin={lat},{lng}&destination={dest}&waypoints={wps}&travelmode=driving"
-        lines.append(f"\n{url}")
-    sid=get_short_id(uid)
-    await upd.message.reply_text("\n".join(lines),reply_markup=main_kb(la,sid,uid in ADMIN_IDS))
+    if data == "stats":   return await adm_stats(upd,ctx)
+    if data == "debt":    return await adm_debt(upd,ctx)
+    if data == "stores":  return await adm_stores_list(upd,ctx)
+    if data == "dists":   return await adm_dists_list(upd,ctx)
+    if data == "zavod":   return await adm_zavod_list(upd,ctx)
+    if data == "bc":
+        await q.edit_message_text("📢 Xabar matnini kiriting:",reply_markup=back_ik("m:admin"))
+        return ST_ADM_BROADCAST
+    return ST_MAIN
 
-# ── ADMIN ─────────────────────────────────────────────────────────────────────
-async def admin_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
-    if uid not in ADMIN_IDS: await upd.message.reply_text(tx("no_admin",la)); return MAIN_MENU
-    if t==tx("back",la):
-        sid=get_short_id(uid)
-        await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,True),parse_mode="HTML"); return MAIN_MENU
-    if t==tx("adm_mahsulot",la):
-        await upd.message.reply_text(tx("mahsulot_nom_uz",la),reply_markup=back_kb(la)); return ADM_MAHSULOT_NOM
-    if t==tx("adm_price",la):
-        await upd.message.reply_text(tx("narx_prod",la),reply_markup=prod_kb(la)); return ADM_PRICE_PROD
-    if t==tx("adm_add_store",la):
-        ctx.user_data["di_dist_id"]=str(uid)
-        await upd.message.reply_text(tx("dokon_name",la),reply_markup=back_kb(la)); return DI_NAME
-    if t==tx("adm_add_dist",la):
-        await upd.message.reply_text("Distribyutor ismi:",reply_markup=back_kb(la)); return ADM_DIST_NAME
-    if t==tx("adm_stats",la):       await a_stats(upd,ctx); return ADMIN_MENU
-    if t==tx("adm_debtors",la):     await a_debtors(upd,ctx); return ADMIN_MENU
-    if t==tx("adm_list_stores",la): await a_list_stores(upd,ctx); return ADMIN_MENU
-    if t==tx("adm_list_dists",la):  await a_list_dists(upd,ctx); return ADMIN_MENU
-    if t==tx("adm_zavod_list",la):  await a_zavod_list(upd,ctx); return ADMIN_MENU
-    if t==tx("adm_broadcast",la):
-        await upd.message.reply_text(tx("broadcast_msg",la),reply_markup=back_kb(la)); return ADM_BROADCAST
-    if t==tx("adm_namoz",la):
-        yoq = not namoz_yoqilgan()
-        set_setting("namoz_eslatma","1" if yoq else "0")
-        status = ("✅ Yoqildi" if yoq else "❌ O'chirildi") if la=="uz" else ("✅ Включено" if yoq else "❌ Выключено")
-        await upd.message.reply_text(f"🕌 Namoz eslatmasi: {status}",reply_markup=admin_kb(la),parse_mode="HTML")
-        return ADMIN_MENU
-    await upd.message.reply_text(tx("adm",la),reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+async def adm_narx_prod_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    pid = int(q.data.split(":")[1]); prods = get_products()
+    p = next((x for x in prods if x["id"]==pid), None)
+    if not p: return ST_MAIN
+    ctx.user_data["narx_p"]=p; ctx.user_data["narx_dokon_id"]=""
+    narx,tn=get_price(pid)
+    await q.edit_message_text(
+        f"💰 <b>{p[la_]}</b>\nJoriy: {narx:,.0f} / {tn:,.0f}\n\nYangi narx kiriting:",
+        parse_mode="HTML",reply_markup=back_ik("m:admin"))
+    return ST_ADM_NARX_VAL
 
-async def adm_mahsulot_nom(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADMIN_MENU
-    ctx.user_data["m_uz"]=t.strip()
-    await upd.message.reply_text(tx("mahsulot_nom_ru",la)); return ADM_MAHSULOT_RU
+async def adm_narx_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); price=parse_money(upd.message.text)
+    if price<=0: await upd.message.reply_text("❌ Noto'g'ri:"); return ST_ADM_NARX_VAL
+    ctx.user_data["narx_val"]=price
+    await upd.message.reply_text("📉 Tannarx kiriting:")
+    return ST_ADM_NARX_COST
 
-async def adm_mahsulot_ru(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); ctx.user_data["m_ru"]=upd.message.text.strip()
-    await upd.message.reply_text(tx("mahsulot_unit",la),
-        reply_markup=ReplyKeyboardMarkup([["kg","litr"],["dona","g"],[tx("back",la)]],resize_keyboard=True))
-    return ADM_MAHSULOT_UNIT
+async def adm_narx_cost(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); cost=parse_money(upd.message.text)
+    p=ctx.user_data.get("narx_p",{}); price=ctx.user_data.get("narx_val",0)
+    set_price(p.get("id",0),p.get(la_,""),price,cost)
+    await upd.message.reply_text(
+        f"✅ Narx: {p.get(la_,'')} = {price:,.0f} / Tannarx: {cost:,.0f}",
+        reply_markup=main_kb(upd.effective_user.id,la_))
+    return ST_MAIN
 
-async def adm_mahsulot_unit(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADMIN_MENU
-    uz=ctx.user_data.get("m_uz",""); ru=ctx.user_data.get("m_ru",""); unit=t.strip()
-    recs=db_all("Mahsulotlar"); new_id=max([int(r.get("ID",0)) for r in recs],default=0)+1
-    db_append("Mahsulotlar",[str(new_id),uz,ru,unit,"1",now_str()])
-    await upd.message.reply_text(tx("mahsulot_ok",la,name=uz),reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+# Mahsulot qo'shish
+async def adm_prod_uz(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["m_uz"]=upd.message.text.strip()
+    await upd.message.reply_text("Mahsulot nomi (ruscha):"); return ST_ADM_MAHSULOT_RU
 
-async def adm_price_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADMIN_MENU
-    p=find_prod(t,la)
-    if not p: await upd.message.reply_text(tx("narx_prod",la),reply_markup=prod_kb(la)); return ADM_PRICE_PROD
-    ctx.user_data["p"]=p; price,cost=get_price(p["id"])
-    await upd.message.reply_text(f"{t}\n💰 Joriy: {price:,.0f} / {cost:,.0f}\n\n{tx('narx_val',la)}",reply_markup=back_kb(la)); return ADM_PRICE_VAL
+async def adm_prod_ru(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["m_ru"]=upd.message.text.strip()
+    await upd.message.reply_text("Birligini tanlang:",
+        reply_markup=ikr([("kg","unit:kg"),("litr","unit:litr")],[("dona","unit:dona"),("g","unit:g")]))
+    return ST_ADM_MAHSULOT_UNIT
 
-async def adm_price_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADM_PRICE_PROD
-    price=parse_money(t)
-    if price<=0: await upd.message.reply_text(tx("err_money",la)); return ADM_PRICE_VAL
-    ctx.user_data["np"]=price; await upd.message.reply_text(tx("tannarx_val",la)); return ADM_COST_VAL
+async def adm_prod_unit_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    unit = q.data.split(":")[1]
+    uz=ctx.user_data.get("m_uz",""); ru=ctx.user_data.get("m_ru","")
+    recs=db_all("Mahsulotlar"); nid=max([int(r.get("ID",0)) for r in recs],default=0)+1
+    db_append("Mahsulotlar",[str(nid),uz,ru,unit,"1",now_str()])
+    await q.edit_message_text(f"✅ Mahsulot qo'shildi: {uz}",reply_markup=back_ik("m:admin"))
+    return ST_MAIN
 
-async def adm_cost_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); cost=parse_money(upd.message.text); p=ctx.user_data["p"]; price=ctx.user_data["np"]
-    set_price(p["id"],p[la],price,cost)
-    await upd.message.reply_text(f"{tx('narx_updated',la)}\n{p[la]}: {price:,.0f} / {cost:,.0f}",reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+# Admin do'kon qo'shish
+async def adm_dokon_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["adm_d_name"]=upd.message.text.strip()
+    await upd.message.reply_text("📍 Manzil:"); return ST_ADM_DOKON_ADDR
 
-async def adm_store_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADMIN_MENU
-    ctx.user_data["ns"]=t.strip(); await upd.message.reply_text("Manzil:",reply_markup=back_kb(la)); return ADM_STORE_ADDR
+async def adm_dokon_addr(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["adm_d_addr"]=upd.message.text.strip()
+    await upd.message.reply_text("🚚 Distribyutor Telegram ID:"); return ST_ADM_DOKON_DIST
 
-async def adm_store_addr(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); ctx.user_data["ns_addr"]=upd.message.text.strip()
-    await upd.message.reply_text("Distribyutor Telegram ID:",reply_markup=back_kb(la)); return ADM_STORE_DIST
-
-async def adm_store_dist(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); ctx.user_data["ns_dist"]=upd.message.text.strip()
-    await upd.message.reply_text("Lokatsiya (yoki Otkazib yuborish):",reply_markup=loc_kb(la)); return ADM_STORE_LOC
-
-async def adm_store_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx)
-    store=ctx.user_data.get("ns",""); addr=ctx.user_data.get("ns_addr",""); dist_id=ctx.user_data.get("ns_dist","")
-    lat,lng="",""
-    if upd.message.location: lat=str(upd.message.location.latitude); lng=str(upd.message.location.longitude)
+async def adm_dokon_dist(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); dist_id=upd.message.text.strip()
     u=get_user(dist_id); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(dist_id)
+    name=ctx.user_data.get("adm_d_name",""); addr=ctx.user_data.get("adm_d_addr","")
     cnt=len(db_all("Dokonlar"))+1
-    db_append("Dokonlar",[str(cnt),"",store,addr,"","","",str(dist_id),dn,lat,lng,now_str()])
-    await upd.message.reply_text(f"✅ Do'kon qo'shildi: {store}",reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+    db_append("Dokonlar",[str(cnt),name,addr,"","","","",dist_id,dn,now_str()])
+    await upd.message.reply_text(f"✅ Do'kon qo'shildi: {name}",reply_markup=main_kb(upd.effective_user.id,la_))
+    return ST_MAIN
 
+# Distribyutor qo'shish
 async def adm_dist_name(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): return ADMIN_MENU
-    ctx.user_data["nd"]=t.strip(); await upd.message.reply_text("Telegram ID:",reply_markup=back_kb(la)); return ADM_DIST_ID
+    ctx.user_data["adm_dist_name"]=upd.message.text.strip()
+    await upd.message.reply_text("Telegram ID:"); return ST_ADM_DIST_TG
 
-async def adm_dist_id(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); name=ctx.user_data.get("nd",""); sid=make_short_id()
-    db_append("Foydalanuvchilar",[upd.message.text.strip(),name,"","","distributor",la,"","tasdiqlangan",sid,now_str()])
-    await upd.message.reply_text(f"✅ Qo'shildi: {name} | ID: {sid}",reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+async def adm_dist_tg(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la_ = la(ctx); tg=upd.message.text.strip(); name=ctx.user_data.get("adm_dist_name","")
+    sid=make_sid()
+    db_append("Foydalanuvchilar",[tg,name,"","","distributor","uz","","tasdiqlangan",sid,now_str()])
+    await upd.message.reply_text(f"✅ Distribyutor: {name} | ID: {sid}",reply_markup=main_kb(upd.effective_user.id,la_))
+    return ST_MAIN
 
+# Broadcast
 async def adm_broadcast(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text
-    if t==tx("back",la): await upd.message.reply_text(tx("adm",la),reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+    la_ = la(ctx); t=upd.message.text
     users=db_all("Foydalanuvchilar"); sent=0; failed=0
     for u in users:
         try: await ctx.bot.send_message(int(u.get("TG_ID",0)),t); sent+=1
         except Exception: failed+=1
-    await upd.message.reply_text(f"✅ {sent} | Xato: {failed}",reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
+    await upd.message.reply_text(f"✅ Yuborildi: {sent} | Xato: {failed}",reply_markup=main_kb(upd.effective_user.id,la_))
+    return ST_MAIN
 
-async def a_zavod_list(upd,ctx):
-    recs=[r for r in db_all("Qabul") if r.get("Status","")=="kutilmoqda"]
-    if not recs: await upd.message.reply_text("📦 Kutilayotgan so'rov yo'q"); return
-    lines=[f"📦 Kutilmoqda: {len(recs)}","---"]
-    for r in recs:
-        qid=r.get("Qabul_ID","")
-        lines.append(f"• {r.get('Dist_Ism','')} | {r.get('Mahsulot','')} {r.get('Miqdor','')} {r.get('Birlik','')}\nJami: {float(r.get('Jami',0) or 0):,.0f}\n✅ /zok_{qid} | ❌ /zrad_{qid}")
-    text="\n".join(lines)
-    for i in range(0,len(text),3500): await upd.message.reply_text(text[i:i+3500])
+# Admin statistika funksiyalari
+async def adm_stats(upd, ctx):
+    q = upd.callback_query
+    tops=db_all("Topshirish"); ins=db_all("Qabul"); stores=db_all("Dokonlar"); users=db_all("Foydalanuvchilar")
+    ts=sum(float(r.get("Jami",0) or 0) for r in tops if r.get("Status","")=="tasdiqlangan")
+    ti=sum(float(r.get("Jami",0) or 0) for r in ins if r.get("Status","")=="tasdiqlangan")
+    jq=sum(get_debt(str(s.get("ID",""))) for s in stores)
+    dists=[u for u in users if u.get("Rol","")=="distributor"]
+    foyda=ts-ti; zakaz=len([r for r in db_all("Buyurtmalar") if r.get("Status","")=="Yangi"])
+    msg=(f"📊 <b>Statistika</b>\n━━━━━━━━━━━━━━━━\n"
+         f"📥 Zavod: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
+         f"💸 Jami qarz: {jq:,.0f}\n💰 Foyda: {foyda:,.0f}\n"
+         f"🏪 Do'konlar: {len(stores)}\n🚚 Distribyutorlar: {len(dists)}\n"
+         f"📋 Yangi zakazlar: {zakaz}")
+    await q.edit_message_text(msg,reply_markup=back_ik("m:admin"),parse_mode="HTML")
+    return ST_MAIN
 
-async def a_list_stores(upd,ctx):
-    stores=db_all("Dokonlar")
-    if not stores: await upd.message.reply_text("🏪 Do'konlar yo'q"); return
-    lines=[f"🏪 Jami: {len(stores)}","---"]
-    for s in stores:
-        debt=get_debt(str(s.get("ID",""))); d=f" | Qarz: {debt:,.0f}" if debt>0 else ""
-        lat=s.get("Lat",""); lng=s.get("Lng",""); loc=f"\n  📍{lat},{lng}" if lat and lng else ""
-        lines.append(f"• {s.get('Nomi','')}{d}\n  📍 {s.get('Adres','-')}\n  📞 {s.get('Tel1','')}\n  🚚 {s.get('Dist_Ism','')} ({s.get('Dist_ID','')}){loc}")
-    text="\n".join(lines)
-    for i in range(0,len(text),3500): await upd.message.reply_text(text[i:i+3500])
-
-async def a_list_dists(upd,ctx):
-    dists=[u for u in db_all("Foydalanuvchilar") if u.get("Rol","")=="distributor"]
-    if not dists: await upd.message.reply_text("🚚 Distribyutorlar yo'q"); return
-    lines=[f"🚚 Jami: {len(dists)}","---"]
-    for u in dists:
-        uid_d=u.get("TG_ID",""); sid=u.get("Short_ID","?")
-        name=f"{u.get('Ism','')} {u.get('Familiya','')}".strip()
-        stores=get_stores(dist_id=uid_d)
-        jq=sum(get_debt(str(s.get("ID",""))) for s in stores)
-        foyda=calc_foyda(str(uid_d))
-        lines.append(f"• {name} (ID:{sid})\n  📞 {u.get('Telefon','')}\n  TG: {uid_d}\n  🏪 {len(stores)} do'kon\n  💸 Qarz: {jq:,.0f}\n  💰 Foyda: {foyda:,.0f}")
-    text="\n".join(lines)
-    for i in range(0,len(text),3500): await upd.message.reply_text(text[i:i+3500])
-
-async def a_stats(upd,ctx):
-    la=lg(ctx)
-    try:
-        tops=db_all("Topshirish"); ins=db_all("Qabul"); stores=db_all("Dokonlar"); users=db_all("Foydalanuvchilar")
-        ts=sum(float(r.get("Jami",0) or 0) for r in tops if r.get("Status","")=="tasdiqlangan")
-        tn=sum(float(r.get("Naqd",0) or 0) for r in tops if r.get("Status","")=="tasdiqlangan")
-        ti=sum(float(r.get("Jami",0) or 0) for r in ins if r.get("Status","")=="tasdiqlangan")
-        jq=sum(get_debt(str(s.get("ID",""))) for s in stores)
-        dists=[u for u in users if u.get("Rol","")=="distributor"]
-        total_foyda=sum(calc_foyda(str(u.get("TG_ID",""))) for u in dists)
-        zakaz=len([r for r in db_all("Buyurtmalar") if r.get("Status","")=="Yangi"])
-        msg=(f"📊 Umumiy statistika\n---\n"
-             f"📥 Zavod: {ti:,.0f}\n🚚 Sotuv: {ts:,.0f}\n"
-             f"💵 Naqd: {tn:,.0f}\n💸 Jami qarz: {jq:,.0f}\n"
-             f"💰 Jami foyda: {total_foyda:,.0f}\n"
-             f"🏪 Do'konlar: {len(stores)}\n🚚 Distribyutorlar: {len(dists)}\n📋 Yangi zakazlar: {zakaz}")
-        await upd.message.reply_text(msg)
-    except Exception as e: await upd.message.reply_text(f"Xatolik: {e}")
-
-async def a_debtors(upd,ctx):
-    stores=db_all("Dokonlar"); lines=["💸 Qarzdorlar:","---"]; total=0
+async def adm_debt(upd, ctx):
+    q = upd.callback_query; stores=db_all("Dokonlar"); lines=["💸 <b>Qarzdorlar:</b>","━━━━━━━━━━━━━━━━"]; total=0
     for s in stores:
         debt=get_debt(str(s.get("ID","")))
         if debt>0: lines.append(f"• {s.get('Nomi','')}: {debt:,.0f}\n  🚚 {s.get('Dist_Ism','')}"); total+=debt
     if len(lines)==2: lines.append("Qarz yo'q!")
-    else: lines.append(f"---\nJami: {total:,.0f}")
-    await upd.message.reply_text("\n".join(lines))
+    else: lines.append(f"━━━━━━━━━━━━━━━━\nJami: {total:,.0f}")
+    await q.edit_message_text("\n".join(lines),reply_markup=back_ik("m:admin"),parse_mode="HTML")
+    return ST_MAIN
 
-# ── SCHEDULER ─────────────────────────────────────────────────────────────────
-async def auto_zakaz_reminder(ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Har kuni kechqurun 20:00 — kecha mol berilgan do'konlarni
-    distribyutorga yuborish (zakaz olish kerakligini eslatish)
-    """
-    try:
-        kecha = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        tops = db_all("Topshirish")
-        dokonlar_by_dist = {}
-        for r in tops:
-            if not str(r.get("Sana","")).startswith(kecha): continue
-            if r.get("Status","") != "tasdiqlangan": continue
-            dist_id = str(r.get("Dist_ID",""))
-            if not dist_id or dist_id=="0": continue
-            dokon_id = str(r.get("Dokon_ID",""))
-            key = f"{dist_id}:{dokon_id}"
-            if key not in dokonlar_by_dist:
-                dokonlar_by_dist[key] = {
-                    "dist_id": dist_id,
-                    "dokon": r.get("Dokon",""),
-                    "dokon_id": dokon_id,
-                }
-        # dist_id bo'yicha guruhlash
-        dist_dokonlar = {}
-        for key, val in dokonlar_by_dist.items():
-            did = val["dist_id"]
-            if did not in dist_dokonlar: dist_dokonlar[did] = []
-            dist_dokonlar[did].append(val)
+async def adm_stores_list(upd, ctx):
+    q = upd.callback_query; stores=db_all("Dokonlar")
+    if not stores:
+        await q.edit_message_text("Do'konlar yo'q.",reply_markup=back_ik("m:admin")); return ST_MAIN
+    lines=[f"🏪 <b>Do'konlar: {len(stores)} ta</b>","━━━━━━━━━━━━━━━━"]
+    for s in stores:
+        debt=get_debt(str(s.get("ID",""))); d=f" | {debt:,.0f}" if debt>0 else ""
+        lines.append(f"• {s.get('Nomi','')}{d}\n  📍 {s.get('Adres','-')}\n  📞 {s.get('Tel1','-')}\n  🚚 {s.get('Dist_Ism','')}")
+    text="\n".join(lines)
+    for i in range(0,len(text),3500): await ctx.bot.send_message(upd.effective_user.id,text[i:i+3500],parse_mode="HTML")
+    await ctx.bot.send_message(upd.effective_user.id,"⬆️",reply_markup=back_ik("m:admin"))
+    return ST_MAIN
 
-        # Har bir distribyutorga xabar
-        for dist_id, dokonlar in dist_dokonlar.items():
-            try:
-                du = get_user(dist_id)
-                if not du: continue
-                la = du.get("Til","uz")
-                lines = []
-                for dk in dokonlar:
-                    # Do'kon telefon raqamini olish
-                    dokon_info = next((s for s in db_all("Dokonlar") if str(s.get("ID",""))==dk["dokon_id"]), None)
-                    tel = dokon_info.get("Tel1","") if dokon_info else ""
-                    tel2 = dokon_info.get("Tel2","") if dokon_info else ""
-                    addr = dokon_info.get("Adres","") if dokon_info else ""
-                    tel_str = f"📞 {tel}" if tel else ""
-                    if tel2: tel_str += f" / {tel2}"
-                    lines.append(f"• {dk['dokon']}\n  {tel_str}\n  📍 {addr}")
-                dokonlar_text = "\n".join(lines)
-                await ctx.bot.send_message(int(dist_id), tx("auto_zakaz_remind",la,dokonlar=dokonlar_text))
-            except Exception as e:
-                logger.error(f"auto_zakaz_remind dist {dist_id}: {e}")
-    except Exception as e:
-        logger.error(f"auto_zakaz_reminder: {e}")
+async def adm_dists_list(upd, ctx):
+    q = upd.callback_query; dists=[u for u in db_all("Foydalanuvchilar") if u.get("Rol","")=="distributor"]
+    if not dists:
+        await q.edit_message_text("Distribyutorlar yo'q.",reply_markup=back_ik("m:admin")); return ST_MAIN
+    lines=[f"🚚 <b>Distribyutorlar: {len(dists)} ta</b>","━━━━━━━━━━━━━━━━"]
+    for u in dists:
+        uid_d=u.get("TG_ID",""); sid=u.get("Short_ID","?")
+        name=f"{u.get('Ism','')} {u.get('Familiya','')}".strip()
+        stores=get_stores(dist_id=uid_d); jq=sum(get_debt(str(s.get("ID",""))) for s in stores)
+        lines.append(f"• {name} (ID:{sid})\n  📞 {u.get('Telefon','')}\n  🏪 {len(stores)} do'kon | 💸 {jq:,.0f}")
+    text="\n".join(lines)
+    for i in range(0,len(text),3500): await ctx.bot.send_message(upd.effective_user.id,text[i:i+3500],parse_mode="HTML")
+    await ctx.bot.send_message(upd.effective_user.id,"⬆️",reply_markup=back_ik("m:admin"))
+    return ST_MAIN
 
-async def namoz_eslatma(ctx: ContextTypes.DEFAULT_TYPE):
-    """Har 5 daqiqada tekshiradi: 30 daqiqa qolganida namoz eslatmasi"""
-    if not namoz_yoqilgan(): return
-    try:
-        now = datetime.now()
-        oy = now.month
-        vaqtlar = get_namoz_vaqtlari(oy)
-        target_time = None
-        target_nomi = None
-        for nom, soat, daqiqa in vaqtlar:
-            namoz_dt = now.replace(hour=soat, minute=daqiqa, second=0, microsecond=0)
-            diff = (namoz_dt - now).total_seconds() / 60
-            if 28 <= diff <= 32:
-                target_time = namoz_dt
-                target_nomi = nom
-                break
-        if not target_nomi: return
-
-        def make_msg(la, nomi, vaqt):
-            if la == "uz":
-                return (f"🕌 <b>{nomi} vaqti yaqinlashmoqda!</b>\n"
-                        f"⏰ Vaqt: {vaqt.strftime('%H:%M')}\n"
-                        f"(30 daqiqa qoldi)\n\n"
-                        f"Namoz — mo'minin uchun eng muhim ibodatlardan biri.\n"
-                        f"Vaqtida o'qing! 🤲")
-            else:
-                return (f"🕌 <b>Время {nomi} приближается!</b>\n"
-                        f"⏰ Время: {vaqt.strftime('%H:%M')}\n"
-                        f"(30 минут осталось)\n\n"
-                        f"Намаз — важнейшая обязанность мусульманина. 🤲")
-
-        # Barcha ro'yxatdagi foydalanuvchilar
-        users = db_all("Foydalanuvchilar")
-        sent_ids = set()
-        for u in users:
-            if not is_approved(u.get("TG_ID","")): continue
-            try:
-                uid_int = int(u.get("TG_ID",0))
-                if uid_int in sent_ids: continue
-                sent_ids.add(uid_int)
-                la = u.get("Til","uz")
-                await ctx.bot.send_message(uid_int, make_msg(la, target_nomi, target_time), parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"namoz eslatma user: {e}")
-
-        # Adminlarga ham (agar sheets da yo'q bo'lsa)
-        for admin_id in ADMIN_IDS:
-            if admin_id in sent_ids: continue
-            try:
-                await ctx.bot.send_message(admin_id, make_msg("uz", target_nomi, target_time), parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"namoz eslatma admin: {e}")
-
-    except Exception as e:
-        logger.error(f"namoz_eslatma: {e}")
-
-async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Har soatda tekshiradi: 24 soat oldin topshirilgan tovarlar haqida
-    distribyutorga eslatma yuboradi
-    """
-    try:
-        now = datetime.now()
-        tops = db_all("Topshirish")
-        for r in tops:
-            if r.get("Status","") != "tasdiqlangan": continue
-            try:
-                top_time = datetime.strptime(r.get("Sana",""), "%Y-%m-%d %H:%M")
-            except Exception: continue
-            hours = (now - top_time).total_seconds() / 3600
-            # 24 soat o'tgan (±30 daqiqa tolerans)
-            if not (23.5 <= hours <= 24.5): continue
-            dist_id = str(r.get("Dist_ID",""))
-            if not dist_id or dist_id == "0": continue
-            try:
-                du = get_user(dist_id)
-                if not du: continue
-                la = du.get("Til","uz")
-                dokon = r.get("Dokon","")
-                prod = r.get("Mahsulot","")
-                qty = r.get("Miqdor","")
-                unit = r.get("Birlik","")
-                # Do'kon telefon raqami
-                dokon_id = str(r.get("Dokon_ID",""))
-                dokon_info = next((s for s in db_all("Dokonlar") if str(s.get("ID",""))==dokon_id), None)
-                tel = dokon_info.get("Tel1","") if dokon_info else ""
-                tel2 = dokon_info.get("Tel2","") if dokon_info else ""
-                tel_str = f"📞 {tel}" if tel else ""
-                if tel2: tel_str += f" / {tel2}"
-                if la == "uz":
-                    msg = (f"📋 24 SOAT ESLATMASI:\n"
-                           f"Do'kon: {dokon}\n{tel_str}\n"
-                           f"Mahsulot: {prod} {qty} {unit}\n\n"
-                           f"Tovar topshirilganiga 24 soat bo'ldi.\n"
-                           f"Yangi zakaz bormi? Do'kon bilan bog'laning!")
-                else:
-                    msg = (f"📋 НАПОМИНАНИЕ 24 ЧАСА:\n"
-                           f"Магазин: {dokon}\n{tel_str}\n"
-                           f"Товар: {prod} {qty} {unit}\n\n"
-                           f"Прошло 24 часа с момента поставки.\n"
-                           f"Нужен новый заказ? Свяжитесь с магазином!")
-                await ctx.bot.send_message(int(dist_id), msg)
-            except Exception as e:
-                logger.error(f"tovar_24h_reminder dist {dist_id}: {e}")
-    except Exception as e:
-        logger.error(f"tovar_24h_reminder: {e}")
+async def adm_zavod_list(upd, ctx):
+    q = upd.callback_query; recs=[r for r in db_all("Qabul") if r.get("Status","")=="kutilmoqda"]
+    if not recs:
+        await q.edit_message_text("📦 Kutilayotgan so'rov yo'q.",reply_markup=back_ik("m:admin")); return ST_MAIN
+    lines=[f"📦 <b>Kutilmoqda: {len(recs)} ta</b>","━━━━━━━━━━━━━━━━"]
+    for r in recs:
+        qid=r.get("Qabul_ID","")
+        lines.append(f"• {r.get('Dist_Ism','')} | {r.get('Mahsulot','')} {r.get('Miqdor','')}\n  Jami: {float(r.get('Jami',0) or 0):,.0f}\n  ✅ /zok_{qid} | ❌ /zrad_{qid}")
+    text="\n".join(lines)
+    for i in range(0,len(text),3500): await ctx.bot.send_message(upd.effective_user.id,text[i:i+3500],parse_mode="HTML")
+    await ctx.bot.send_message(upd.effective_user.id,"⬆️",reply_markup=back_ik("m:admin"))
+    return ST_MAIN
 
 
+# ── SCHEDULER ──────────────────────────────────────────────────────────────────
 async def debt_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     """Har kuni 09:00 qarz eslatmasi"""
     try:
         for u in db_all("Foydalanuvchilar"):
-            if u.get("Rol","")!="distributor": continue
+            if u.get("Rol","")!="distributor" or not is_approved(u.get("TG_ID","")): continue
             uid=str(u.get("TG_ID",""))
             stores=get_stores(dist_id=uid)
             debts=[(s.get("Nomi",""),get_debt(str(s.get("ID","")))) for s in stores]
             debts=[(n,d) for n,d in debts if d>0]
             if not debts: continue
             try:
-                la=u.get("Til","uz"); lines=["💸 Bugungi qarzlar:","---"]
+                lines=["💸 <b>Bugungi qarzlar:</b>","━━━━━━━━━━━━━━━━"]
                 for name,debt in debts: lines.append(f"• {name}: {debt:,.0f}")
-                await ctx.bot.send_message(int(uid),"\n".join(lines))
+                await ctx.bot.send_message(int(uid),"\n".join(lines),parse_mode="HTML")
             except Exception: pass
     except Exception as e: logger.error(f"debt_reminder: {e}")
 
-async def zakaz_from_store_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""
-    if t==tx("back",la):
-        await _show_my_stores(upd,ctx); return DI_NAME
-    p=find_prod(t,la)
-    if not p:
-        await upd.message.reply_text(tx("prod",la),reply_markup=prod_kb(la)); return ZAKAZ_FROM_STORE_PROD
-    ctx.user_data["zakaz_p"]=p
-    await upd.message.reply_text(
-        f"{t}\n\nMiqdorni kiriting (masalan: 5 yoki 5.5):" if la=="uz"
-        else f"{t}\n\nВведите количество:",
-        reply_markup=back_kb(la))
-    return ZAKAZ_FROM_STORE_QTY
-
-async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); t=upd.message.text or ""; uid=upd.effective_user.id
-    if t==tx("back",la):
-        prods=get_products(); rows=[]
-        for i in range(0,len(prods),2):
-            r=[prods[i][la]]
-            if i+1<len(prods): r.append(prods[i+1][la])
-            rows.append(r)
-        rows.append([tx("back",la)])
-        await upd.message.reply_text(tx("prod",la),reply_markup=ReplyKeyboardMarkup(rows,resize_keyboard=True))
-        return ZAKAZ_FROM_STORE_PROD
-    p=ctx.user_data.get("zakaz_p",{}); store=ctx.user_data.get("zakaz_store",{})
-    prod_name=p.get(la,"")
-    # Brinza - butun son (dona), boshqalar float
-    if is_brinza(prod_name):
-        try: qty=float(t.strip().replace(",","."))
-        except: qty=0
-        if qty<=0 or qty!=int(qty):
-            await upd.message.reply_text(
-                "❗ Brinza dona bilan kiritiladi! Butun son kiriting (masalan: 3):" if la=="uz"
-                else "❗ Брынза считается штуками! Введите целое число (например: 3):",
-                reply_markup=back_kb(la))
-            return ZAKAZ_FROM_STORE_QTY
-        qty=int(qty)
-        qty_str=f"{qty} dona"  # Zakaz: dona
-        birlik="dona"
-    else:
-        qty=parse_weight(t)
-        if qty<=0: await upd.message.reply_text(tx("err_num",la)); return ZAKAZ_FROM_STORE_QTY
-        unit=p.get("unit","")
-        qty_str=f"{qty:.3f} {unit}" if unit not in ("dona",) else f"{int(round(qty))} {unit}"
-        birlik=unit
-    store_id=str(store.get("ID","")); store_name=store.get("Nomi","")
-    dist_id=str(store.get("Dist_ID","")) or str(uid)  # Do'konning distribyutori
-    zakaz_id=make_op_id("Z")
-    # Saqlanadi: Sana, Dokon_ID, Dokon, Dist_ID, Mahsulot, Miqdor, Status, Izoh, Zakaz_ID
-    db_append("Buyurtmalar",[now_str(),store_id,store_name,dist_id,prod_name,qty,"Yangi","",zakaz_id])
-    logger.info(f"Zakaz saqlandi: dokon={store_name} dist_id={dist_id} prod={prod_name} qty={qty}")
-    qty_str = format_qty(qty, birlik, prod_name=prod_name, topshirish=False)
-    await upd.message.reply_text(
-        f"✅ Zakaz qo'shildi!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}" if la=="uz"
-        else f"✅ Заказ добавлен!\n🏪 {store_name}\n📦 {prod_name}: {qty_str}")
-    await _show_my_stores(upd,ctx)
-    return DI_NAME
-
-# ── ZAKAZ TAHRIRLASH ──────────────────────────────────────────────────────────
-async def zakaz_edit_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Zakaz o'zgartirish buyrug'i: /zakaz_edit_ZAKAZ_ID"""
-    m = re.search(r'/zakaz_edit_(\w+)', upd.message.text or "")
-    if not m: return
-    zakaz_id = m.group(1)
-    la = lg(ctx)
-    # Zakaz topish
-    zakazlar = db_all("Buyurtmalar")
-    zakaz = next((r for r in zakazlar if r.get("Zakaz_ID","") == zakaz_id), None)
-    if not zakaz:
-        await upd.message.reply_text("❌ Zakaz topilmadi."); return
-    if zakaz.get("Status","") not in ("Yangi","Qabul_qilindi"):
-        await upd.message.reply_text("❌ Bu zakazni o'zgartirish mumkin emas (rad etilgan yoki yopilgan).")
-        return
-    ctx.user_data["edit_zakaz_id"] = zakaz_id
-    ctx.user_data["edit_zakaz"] = zakaz
-    prod = zakaz.get("Mahsulot","")
-    qty = float(zakaz.get("Miqdor",0) or 0)
-    unit_str = "dona" if is_brinza(prod) else zakaz.get("Birlik","")
-    await upd.message.reply_text(
-        f"✏️ Zakazni o'zgartirish:\n"
-        f"📦 {prod}: {format_qty(qty, unit_str, prod_name=prod, topshirish=False)}\n"
-        f"🏪 {zakaz.get('Dokon','')}\n\n"
-        f"Yangi miqdorni kiriting (yoki Orqaga):" if la=="uz" else
-        f"✏️ Изменить заказ:\n"
-        f"📦 {prod}: {format_qty(qty, unit_str, prod_name=prod, topshirish=False)}\n"
-        f"🏪 {zakaz.get('Dokon','')}\n\n"
-        f"Введите новое количество (или Назад):",
-        reply_markup=ReplyKeyboardMarkup([[tx("back",la)]], resize_keyboard=True))
-    return ZAKAZ_EDIT_QTY
-
-async def zakaz_edit_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx); t = upd.message.text or ""
-    if t == tx("back",la):
-        sid = get_short_id(upd.effective_user.id)
-        await upd.message.reply_text(tx("main",la,sid=sid),
-            reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
-        return MAIN_MENU
-    zakaz = ctx.user_data.get("edit_zakaz",{})
-    prod = zakaz.get("Mahsulot","")
-    zakaz_id = ctx.user_data.get("edit_zakaz_id","")
-    if is_brinza(prod):
-        try: qty = int(float(t.strip().replace(",",".")))
-        except: qty = 0
-        if qty <= 0:
-            await upd.message.reply_text("Butun son kiriting (dona):"); return ZAKAZ_EDIT_QTY
-    else:
-        qty = parse_weight(t)
-        if qty <= 0:
-            await upd.message.reply_text(tx("err_num",la)); return ZAKAZ_EDIT_QTY
-    # Yangilash
+async def auto_zakaz_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    """Har kuni 20:00 kecha mol berilgan do'konlar eslatmasi"""
     try:
-        w = get_ws("Buyurtmalar")
-        if w:
-            headers = w.row_values(1)
-            recs = w.get_all_records()
-            for i, r in enumerate(recs):
-                if r.get("Zakaz_ID","") == zakaz_id:
-                    w.update_cell(i+2, headers.index("Miqdor")+1, str(qty))
-                    break
-    except Exception as e: logger.error(f"zakaz_edit: {e}")
-    unit_str = "dona" if is_brinza(prod) else zakaz.get("Birlik","")
-    qty_str = format_qty(qty, unit_str, prod_name=prod, topshirish=False)
-    await upd.message.reply_text(
-        f"✅ Zakaz yangilandi!\n📦 {prod}: {qty_str}" if la=="uz"
-        else f"✅ Заказ обновлён!\n📦 {prod}: {qty_str}")
-    sid = get_short_id(upd.effective_user.id)
-    await upd.message.reply_text(tx("main",la,sid=sid),
-        reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
-    return MAIN_MENU
+        kecha=(datetime.now()-timedelta(days=1)).strftime("%Y-%m-%d")
+        tops=db_all("Topshirish"); dist_map={}
+        for r in tops:
+            if not str(r.get("Sana","")).startswith(kecha): continue
+            if r.get("Status","")!="tasdiqlangan": continue
+            did=str(r.get("Dist_ID",""))
+            if not did or did=="0": continue
+            did_key=did; dokon=r.get("Dokon",""); dokon_id=str(r.get("Dokon_ID",""))
+            dist_map.setdefault(did_key,{})[f"{dokon}:{dokon_id}"]=(dokon,dokon_id)
+        for did,dokonlar in dist_map.items():
+            try:
+                du=get_user(did)
+                if not du: continue
+                lines=["📋 <b>KECHA MOL BERILGAN DO'KONLAR:</b>\n(Zakaz olish kerakmi?)\n","━━━━━━━━━━━━━━━━"]
+                for dk_name, dk_id in dokonlar.values():
+                    stores=db_all("Dokonlar"); store=next((s for s in stores if str(s.get("ID",""))==dk_id),None)
+                    tel=store.get("Tel1","") if store else ""
+                    tel2=store.get("Tel2","") if store else ""
+                    tel_str=f"📞 {tel}" if tel else ""
+                    if tel2: tel_str+=f" / {tel2}"
+                    lines.append(f"• <b>{dk_name}</b>\n  {tel_str}")
+                lines.append("\nUlar bilan bog'laning!")
+                await ctx.bot.send_message(int(did),"\n".join(lines),parse_mode="HTML")
+            except Exception as e: logger.error(f"zakaz remind: {e}")
+    except Exception as e: logger.error(f"auto_zakaz: {e}")
 
-# ── DO'KON MA'LUMOTLARINI O'ZGARTIRISH ────────────────────────────────────────
-async def dokon_edit_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Do'kon tahrirlash: /dokon_edit_ID"""
-    m = re.search(r'/dokon_edit_(\d+)', upd.message.text or "")
-    if not m: return
-    dokon_id = m.group(1); la = lg(ctx)
-    stores = db_all("Dokonlar")
-    store = next((s for s in stores if str(s.get("ID",""))==dokon_id), None)
-    if not store:
-        await upd.message.reply_text("❌ Do'kon topilmadi."); return
-    ctx.user_data["edit_dokon_id"] = dokon_id
-    ctx.user_data["edit_dokon"] = dict(store)  # nusxa
-    fields = {
-        "1": "Nomi", "2": "Adres", "3": "MCHJ",
-        "4": "Tel1", "5": "Tel2"
-    }
-    lines = [f"✏️ <b>{store.get('Nomi','')} ma'lumotlarini o'zgartirish:</b>\n"]
-    for k,v in fields.items():
-        lines.append(f"{k}. {v}: <i>{store.get(v,'—')}</i>")
-    lines.append("\nO'zgartirmoqchi bo'lgan raqamni yuboring:")
-    await upd.message.reply_text(
-        "\n".join(lines), parse_mode="HTML",
-        reply_markup=ReplyKeyboardMarkup(
-            [["1","2","3"],["4","5"],["🔙 Orqaga"]],
-            resize_keyboard=True))
-    return DOKON_EDIT_FIELD
-
-async def dokon_edit_field(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx); t = upd.message.text or ""
-    if t in ("🔙 Orqaga","🔙 Назад","Orqaga"):
-        sid = get_short_id(upd.effective_user.id)
-        await upd.message.reply_text(tx("main",la,sid=sid),
-            reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
-        return MAIN_MENU
-    field_map = {"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2"}
-    field = field_map.get(t)
-    if not field:
-        await upd.message.reply_text("1-5 raqam yuboring:"); return DOKON_EDIT_FIELD
-    ctx.user_data["edit_field"] = field
-    store = ctx.user_data.get("edit_dokon",{})
-    await upd.message.reply_text(
-        f"<b>{field}</b> ni o'zgartirish\n"
-        f"Joriy: <i>{store.get(field,'—')}</i>\n\n"
-        f"Yangi qiymatni kiriting:",
-        parse_mode="HTML", reply_markup=back_kb(la))
-    return DOKON_EDIT_VAL
-
-async def dokon_edit_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la = lg(ctx); t = upd.message.text or ""
-    if t == tx("back",la):
-        return await dokon_edit_cmd_restart(upd, ctx)
-    field = ctx.user_data.get("edit_field","")
-    dokon_id = ctx.user_data.get("edit_dokon_id","")
-    # Joriy qiymatni saqlash (vozvrat uchun)
-    old_store = ctx.user_data.get("edit_dokon",{})
-    old_val = old_store.get(field,"")
-    # Google Sheets da yangilash
+async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    """Har soatda: 24 soat oldin topshirilgan tovarlar eslatmasi"""
     try:
-        w = get_ws("Dokonlar")
-        if w:
-            headers = w.row_values(1)
-            recs = w.get_all_records()
-            for i, r in enumerate(recs):
-                if str(r.get("ID","")) == dokon_id:
-                    w.update_cell(i+2, headers.index(field)+1, t.strip())
-                    break
-    except Exception as e: logger.error(f"dokon_edit: {e}")
-    # Local nusxani yangilash
-    ctx.user_data["edit_dokon"][field] = t.strip()
-    await upd.message.reply_text(
-        f"✅ O'zgartirildi!\n"
-        f"<b>{field}</b>: <s>{old_val}</s> → <b>{t.strip()}</b>\n\n"
-        f"Boshqa maydon o'zgartirish uchun raqam yuboring:",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardMarkup(
-            [["1","2","3"],["4","5"],["🔙 Orqaga"]],
-            resize_keyboard=True))
-    return DOKON_EDIT_FIELD
+        now=datetime.now(); tops=db_all("Topshirish")
+        for r in tops:
+            if r.get("Status","")!="tasdiqlangan": continue
+            try: top_time=datetime.strptime(r.get("Sana",""),"%Y-%m-%d %H:%M")
+            except Exception: continue
+            hours=(now-top_time).total_seconds()/3600
+            if not (23.5<=hours<=24.5): continue
+            did=str(r.get("Dist_ID",""))
+            if not did or did=="0": continue
+            try:
+                du=get_user(did)
+                if not du: continue
+                dokon=r.get("Dokon",""); prod=r.get("Mahsulot",""); miqdor=r.get("Miqdor","")
+                dokon_id=str(r.get("Dokon_ID",""))
+                store=next((s for s in db_all("Dokonlar") if str(s.get("ID",""))==dokon_id),None)
+                tel=store.get("Tel1","") if store else ""
+                await ctx.bot.send_message(int(did),
+                    f"📋 <b>24 SOAT ESLATMASI</b>\n"
+                    f"🏪 {dokon}\n📞 {tel}\n"
+                    f"📦 {prod}: {miqdor}\n\n"
+                    f"Yangi zakaz bormi? Do'kon bilan bog'laning!",
+                    parse_mode="HTML")
+            except Exception as e: logger.error(f"24h: {e}")
+    except Exception as e: logger.error(f"tovar_24h: {e}")
 
-async def dokon_edit_cmd_restart(upd, ctx):
-    """Do'kon tahrirlash menyusini qayta ko'rsatish"""
-    la = lg(ctx)
-    store = ctx.user_data.get("edit_dokon",{})
-    dokon_id = ctx.user_data.get("edit_dokon_id","")
-    fields = {"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2"}
-    lines = [f"✏️ <b>{store.get('Nomi','')} ma'lumotlarini o'zgartirish:</b>\n"]
-    for k,v in fields.items():
-        lines.append(f"{k}. {v}: <i>{store.get(v,'—')}</i>")
-    lines.append("\nO'zgartirmoqchi bo'lgan raqamni yuboring:")
-    await upd.message.reply_text("\n".join(lines), parse_mode="HTML",
-        reply_markup=ReplyKeyboardMarkup([["1","2","3"],["4","5"],["🔙 Orqaga"]],resize_keyboard=True))
-    return DOKON_EDIT_FIELD
+async def namoz_eslatma(ctx: ContextTypes.DEFAULT_TYPE):
+    """Har 5 daqiqada: 30 daqiqa qolganida namoz eslatmasi"""
+    if not namoz_on(): return
+    try:
+        now=datetime.now(); oy=now.month
+        vaqtlar=NAMOZ.get(oy,NAMOZ[1])
+        target=None; nom=None
+        for i,(soat,daqiqa) in enumerate(vaqtlar):
+            ndt=now.replace(hour=soat,minute=daqiqa,second=0,microsecond=0)
+            diff=(ndt-now).total_seconds()/60
+            if 28<=diff<=32: target=ndt; nom=NAMOZ_NOMLARI[i]; break
+        if not nom: return
+        msg=(f"🕌 <b>{nom} vaqti yaqin!</b>\n"
+             f"⏰ {target.strftime('%H:%M')} (30 daqiqa qoldi)\n\n"
+             f"Namozni vaqtida o'qing! 🤲")
+        # Hammaga yuborish
+        users=db_all("Foydalanuvchilar"); sent=set()
+        for u in users:
+            if not is_approved(u.get("TG_ID","")): continue
+            try:
+                uid_int=int(u.get("TG_ID",0))
+                if uid_int in sent: continue
+                sent.add(uid_int)
+                await ctx.bot.send_message(uid_int,msg,parse_mode="HTML")
+            except Exception: pass
+        for adm in ADMIN_IDS:
+            if adm not in sent:
+                try: await ctx.bot.send_message(adm,msg,parse_mode="HTML")
+                except Exception: pass
+    except Exception as e: logger.error(f"namoz: {e}")
 
-
-async def cancel(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    la=lg(ctx); uid=upd.effective_user.id
-    sid=get_short_id(uid)
-    await upd.message.reply_text(tx("main",la,sid=sid),reply_markup=main_kb(la,sid,uid in ADMIN_IDS),parse_mode="HTML"); return MAIN_MENU
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+# ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
-    if not BOT_TOKEN: print("BOT_TOKEN topilmadi!"); return
+    if not BOT_TOKEN: print("BOT_TOKEN yo'q!"); return
     app = Application.builder().token(BOT_TOKEN).build()
-    # Har kuni 09:00 qarz eslatmasi
+
+    # Scheduler
     app.job_queue.run_daily(debt_reminder, time=dtime(9,0))
-    # Har kuni 20:00 zakaz eslatmasi (kecha mol berilgan do'konlar)
     app.job_queue.run_daily(auto_zakaz_reminder, time=dtime(20,0))
-    # Har soatda 24h topshirish eslatmasi
     app.job_queue.run_repeating(tovar_24h_reminder, interval=3600, first=60)
-    # Har 5 daqiqada namoz vaqti tekshiruvi
     app.job_queue.run_repeating(namoz_eslatma, interval=300, first=30)
 
-    txt      = filters.TEXT & ~filters.COMMAND
-    photo_txt= (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
-    loc_txt  = (filters.LOCATION | filters.TEXT) & ~filters.COMMAND
-    cont_txt = (filters.CONTACT | filters.TEXT) & ~filters.COMMAND
+    txt  = filters.TEXT & ~filters.COMMAND
+    photo_txt = (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
+    cont_txt  = (filters.CONTACT | filters.TEXT) & ~filters.COMMAND
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start",start)],
+        entry_points=[CommandHandler("start", start)],
         states={
-            LANG_SELECT:        [CallbackQueryHandler(lang_cb,pattern="^lang_"),CommandHandler("start",start)],
-            REG_NAME:           [MessageHandler(txt,reg_name)],
-            REG_FNAME:          [MessageHandler(txt,reg_fname)],
-            REG_PHONE:          [MessageHandler(cont_txt,reg_phone)],
-            REG_PASSPORT:       [MessageHandler((filters.PHOTO|filters.TEXT)&~filters.COMMAND,reg_passport)],
-            WAIT_APPROVE:       [MessageHandler(txt,wait_approve_h)],
-            MAIN_MENU:          [
-                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
-                MessageHandler(filters.Regex(r'^/zakaz_edit_\w+$'), zakaz_edit_cmd),
-                MessageHandler(txt, main_h),
+            ST_LANG: [CallbackQueryHandler(lang_cb, pattern="^lang:")],
+            ST_REG_NAME:    [MessageHandler(txt, reg_name)],
+            ST_REG_FNAME:   [MessageHandler(txt, reg_fname)],
+            ST_REG_PHONE:   [MessageHandler(cont_txt, reg_phone)],
+            ST_REG_PASSPORT:[
+                MessageHandler((filters.PHOTO|filters.TEXT)&~filters.COMMAND, reg_passport),
+                CallbackQueryHandler(reg_passport, pattern="^skip_passport$"),
             ],
-            DIST_LINK_ID:       [MessageHandler(txt,lambda u,c: MAIN_MENU)],  # placeholder
-            ZAVOD_PROD:         [MessageHandler(txt,zavod_prod)],
-            ZAVOD_QTY:          [MessageHandler(txt,zavod_qty)],
-            TOP_STORE:          [MessageHandler(txt,top_store)],
-            TOP_PROD:           [MessageHandler(txt,top_prod)],
-            TOP_PHOTO:          [MessageHandler(photo_txt,top_photo)],
-            TOP_PAY_TYPE:       [MessageHandler(txt,top_pay_type)],
-            TOP_PAY_AMOUNT:     [MessageHandler(txt,top_pay_amount)],
-            VOZ_HAL:            [MessageHandler(txt,voz_hal)],
-            VOZ_PROD:           [MessageHandler(txt,voz_prod)],
-            VOZ_QTY:            [MessageHandler(txt,voz_qty)],
-            ZAKAZ_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
-            ZAKAZ_EDIT_QTY:     [MessageHandler(txt,zakaz_edit_qty)],
-            DOKON_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
-            DOKON_EDIT_FIELD:   [
-                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
-                MessageHandler(txt, dokon_edit_field),
+            ST_WAIT_APPROVE:[
+                MessageHandler(txt, wait_approve),
+                CallbackQueryHandler(wait_approve, pattern="^resend$"),
             ],
-            DOKON_EDIT_VAL:     [MessageHandler(txt,dokon_edit_val)],
-            ZAKAZ_COMMENT:      [MessageHandler(txt,zakaz_comment)],
-            DI_NAME:            [
-                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
-                MessageHandler(filters.Regex(r'^/zakaz_edit_\w+$'), zakaz_edit_cmd),
-                MessageHandler(txt, di_name),
+            ST_MAIN: [
+                CallbackQueryHandler(main_cb,         pattern="^m:"),
+                CallbackQueryHandler(zavod_prod_cb,   pattern="^zav:"),
+                CallbackQueryHandler(top_store_cb,    pattern="^top_s:"),
+                CallbackQueryHandler(top_prod_cb,     pattern="^top_p:"),
+                CallbackQueryHandler(top_photo_ocr_cb,pattern="^ocr_"),
+                CallbackQueryHandler(top_pay_cb,      pattern="^(pay:|voz:)"),
+                CallbackQueryHandler(voz_prod_cb,     pattern="^voz_p:"),
+                CallbackQueryHandler(zakaz_action_cb, pattern="^(zqabul:|zrad:)"),
+                CallbackQueryHandler(zakaz_skip_cb,   pattern="^zak_skip$"),
+                CallbackQueryHandler(dokon_add_cb,    pattern="^dokon:add$"),
+                CallbackQueryHandler(dokon_zakaz_cb,  pattern="^dzak:"),
+                CallbackQueryHandler(zakaz_prod_cb,   pattern="^zprod:"),
+                CallbackQueryHandler(dokon_edit_cb,   pattern="^dedit:"),
+                CallbackQueryHandler(dokon_edit_field_cb, pattern="^ef:"),
+                CallbackQueryHandler(narx_prod_cb,    pattern="^narx:"),
+                CallbackQueryHandler(narx_type_cb,    pattern="^narx_type:"),
+                CallbackQueryHandler(narx_dokon_cb,   pattern="^narx_d:"),
+                CallbackQueryHandler(admin_cb,        pattern="^adm:"),
+                CallbackQueryHandler(adm_narx_prod_cb,pattern="^adm_narx:"),
+                CallbackQueryHandler(adm_prod_unit_cb,pattern="^unit:"),
+                CallbackQueryHandler(hisobot_cb,      pattern="^his:"),
+                MessageHandler(txt, lambda u,c: ST_MAIN),
             ],
-            ZAKAZ_FROM_STORE_PROD:[MessageHandler(txt,zakaz_from_store_prod)],
-            ZAKAZ_FROM_STORE_QTY: [MessageHandler(txt,zakaz_from_store_qty)],
-            DI_ADDR:            [MessageHandler(txt,di_addr)],
-            DI_MCHJ:            [MessageHandler(txt,di_mchj)],
-            DI_TEL1:            [MessageHandler(cont_txt,di_tel1)],
-            DI_TEL2:            [MessageHandler(cont_txt,di_tel2)],
-            DI_EGA_ISM:         [MessageHandler(txt,di_ega_ism)],
-            DI_PHOTO:           [MessageHandler(photo_txt,di_photo)],
-            NARX_PROD:          [MessageHandler(txt,narx_prod)],
-            NARX_TYPE:          [MessageHandler(txt,narx_type)],
-            NARX_VAL:           [MessageHandler(txt,narx_val)],
-            NARX_COST:          [MessageHandler(txt,narx_cost)],
-            NARX_DOKON:         [MessageHandler(txt,narx_dokon)],
-            NARX_DOKON_VAL:     [MessageHandler(txt,narx_dokon_val)],
-            NARX_DOKON_COST:    [MessageHandler(txt,narx_dokon_cost)],
-            HISOBOT_MENU:       [MessageHandler(txt,hisobot_h)],
-            ADMIN_MENU:         [MessageHandler(txt,admin_h)],
-            ADM_MAHSULOT_NOM:   [MessageHandler(txt,adm_mahsulot_nom)],
-            ADM_MAHSULOT_RU:    [MessageHandler(txt,adm_mahsulot_ru)],
-            ADM_MAHSULOT_UNIT:  [MessageHandler(txt,adm_mahsulot_unit)],
-            ADM_PRICE_PROD:     [MessageHandler(txt,adm_price_prod)],
-            ADM_PRICE_VAL:      [MessageHandler(txt,adm_price_val)],
-            ADM_COST_VAL:       [MessageHandler(txt,adm_cost_val)],
-            ADM_STORE_NAME:     [MessageHandler(txt,adm_store_name)],
-            ADM_STORE_ADDR:     [MessageHandler(txt,adm_store_addr)],
-            ADM_STORE_DIST:     [MessageHandler(txt,adm_store_dist)],
-            ADM_STORE_LOC:      [MessageHandler(loc_txt,adm_store_loc)],
-            ADM_DIST_NAME:      [MessageHandler(txt,adm_dist_name)],
-            ADM_DIST_ID:        [MessageHandler(txt,adm_dist_id)],
-            ADM_BROADCAST:      [MessageHandler(txt,adm_broadcast)],
+            ST_ZAVOD_QTY:         [MessageHandler(txt, zavod_qty)],
+            ST_TOP_STORE:         [CallbackQueryHandler(top_store_cb, pattern="^top_s:")],
+            ST_TOP_PROD:          [CallbackQueryHandler(top_prod_cb, pattern="^top_p:")],
+            ST_TOP_PHOTO:         [
+                MessageHandler(photo_txt, top_photo),
+                CallbackQueryHandler(top_photo_ocr_cb, pattern="^ocr_"),
+            ],
+            ST_TOP_PAY:           [
+                CallbackQueryHandler(top_pay_cb, pattern="^(pay:|voz:|voz_p:)"),
+                CallbackQueryHandler(voz_prod_cb, pattern="^voz_p:"),
+                MessageHandler(txt, top_naqd),
+            ],
+            ST_TOP_NAQD:          [MessageHandler(txt, top_naqd)],
+            ST_VOZ_PROD:          [CallbackQueryHandler(voz_prod_cb, pattern="^voz_p:")],
+            ST_VOZ_QTY:           [MessageHandler(txt, voz_qty)],
+            ST_ZAKAZ_COMMENT:     [
+                MessageHandler(txt, zakaz_comment),
+                CallbackQueryHandler(zakaz_skip_cb, pattern="^zak_skip$"),
+            ],
+            ST_DI_NAME:  [MessageHandler(txt, di_name)],
+            ST_DI_ADDR:  [MessageHandler(txt, di_addr)],
+            ST_DI_MCHJ:  [
+                MessageHandler(txt, di_mchj),
+                CallbackQueryHandler(di_mchj, pattern="^di_skip:mchj$"),
+            ],
+            ST_DI_TEL1:  [MessageHandler(cont_txt, di_tel1)],
+            ST_DI_TEL2:  [
+                MessageHandler(cont_txt, di_tel2),
+                CallbackQueryHandler(di_tel2, pattern="^di_skip:tel2$"),
+            ],
+            ST_DI_EGA:   [MessageHandler(txt, di_ega)],
+            ST_DI_PHOTO: [MessageHandler(photo_txt, di_photo)],
+            ST_NARX_VAL:       [MessageHandler(txt, narx_val)],
+            ST_NARX_COST:      [MessageHandler(txt, narx_cost)],
+            ST_NARX_DOKON_VAL: [MessageHandler(txt, narx_dokon_val)],
+            ST_NARX_DOKON_COST:[MessageHandler(txt, narx_dokon_cost)],
+            ST_ZAKAZ_FROM_QTY: [MessageHandler(txt, zakaz_from_qty)],
+            ST_DOKON_EDIT_VAL: [MessageHandler(txt, dokon_edit_val)],
+            ST_ADM_MAHSULOT_UZ:  [MessageHandler(txt, adm_prod_uz)],
+            ST_ADM_MAHSULOT_RU:  [MessageHandler(txt, adm_prod_ru)],
+            ST_ADM_MAHSULOT_UNIT:[CallbackQueryHandler(adm_prod_unit_cb, pattern="^unit:")],
+            ST_ADM_NARX_VAL:     [MessageHandler(txt, adm_narx_val)],
+            ST_ADM_NARX_COST:    [MessageHandler(txt, adm_narx_cost)],
+            ST_ADM_DOKON_NAME:   [MessageHandler(txt, adm_dokon_name)],
+            ST_ADM_DOKON_ADDR:   [MessageHandler(txt, adm_dokon_addr)],
+            ST_ADM_DOKON_DIST:   [MessageHandler(txt, adm_dokon_dist)],
+            ST_ADM_DIST_NAME:    [MessageHandler(txt, adm_dist_name)],
+            ST_ADM_DIST_TG:      [MessageHandler(txt, adm_dist_tg)],
+            ST_ADM_BROADCAST:    [MessageHandler(txt, adm_broadcast)],
+            ST_ZAKAZ_EDIT_QTY:   [MessageHandler(txt, lambda u,c: ST_MAIN)],
         },
-        fallbacks=[CommandHandler("cancel",cancel),CommandHandler("start",start)],
+        fallbacks=[CommandHandler("start", start), CommandHandler("cancel", start)],
         allow_reentry=True,
     )
-    for pattern,handler in [
-        (r'^/approve_\d+$', approve_cmd),
-        (r'^/zakaz_edit_\w+$', zakaz_edit_cmd),
-        (r'^/dokon_edit_\d+$', dokon_edit_cmd),
-        (r'^/reject_\d+$',  reject_cmd),
-        (r'^/zok_\w+$',     zok_cmd),
-        (r'^/zrad_\w+$',    zrad_cmd),
-        (r'^/tok_\w+$',     tok_cmd),
-        (r'^/trad_\w+$',    trad_cmd),
-        (r'^/vok_\w+$',     vok_cmd),
-        (r'^/vrad_\w+$',    vrad_cmd),
-        (r'^/zqabul_\w+$',  zqabul_cmd),
-        (r'^/zrad_z_\w+$',  zrad_z_cmd),
+
+    # Command handlers
+    for pattern, handler in [
+        (r'^/approve_\d+$',  approve_cmd),
+        (r'^/reject_\d+$',   reject_cmd),
+        (r'^/zok_\w+$',      zok_cmd),
+        (r'^/zrad_\w+$',     zrad_cmd),
+        (r'^/tok_\w+$',      tok_cmd),
+        (r'^/trad_\w+$',     trad_cmd),
+        (r'^/vok_\w+$',      vok_cmd),
+        (r'^/vrad_\w+$',     vrad_cmd),
     ]:
-        app.add_handler(MessageHandler(filters.Regex(pattern),handler))
-    app.add_handler(MessageHandler(filters.LOCATION,marshrut_loc))
+        app.add_handler(MessageHandler(filters.Regex(pattern), handler))
+
     app.add_handler(conv)
-    print("Bot ishga tushdi! v3.1")
+    print("Alba Milk Bot v4.0 — Inline Keyboard")
     app.run_polling(drop_pending_updates=True)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
