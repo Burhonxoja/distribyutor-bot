@@ -493,6 +493,8 @@ async def edit_or_send(upd, ctx, text, kb=None, parse_mode="HTML"):
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = upd.effective_user.id
     user = get_user(uid)
+    # Avval eski ReplyKeyboard ni o'chirish
+    await upd.message.reply_text("...", reply_markup=ReplyKeyboardRemove())
 
     if uid in ADMIN_IDS:
         la_ = ctx.user_data.get("lang","uz")
@@ -500,8 +502,7 @@ async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sid = get_sid(uid)
         await upd.message.reply_text(
             f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>",
-            reply_markup=main_kb(uid, la_), parse_mode="HTML",
-            reply_markup_remove=None)
+            reply_markup=main_kb(uid, la_), parse_mode="HTML")
         return ST_MAIN
 
     if user:
