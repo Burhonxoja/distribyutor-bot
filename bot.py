@@ -57,7 +57,13 @@ def get_products():
     ADM_STORE_NAME, ADM_STORE_ADDR, ADM_STORE_DIST, ADM_STORE_LOC,
     ADM_DIST_NAME, ADM_DIST_ID,
     ADM_BROADCAST,
-) = range(50)
+    # Zakaz o'zgartirish
+    ZAKAZ_EDIT_SELECT, ZAKAZ_EDIT_QTY,
+    # Do'kon ma'lumot o'zgartirish
+    DOKON_EDIT_SELECT, DOKON_EDIT_FIELD, DOKON_EDIT_VAL,
+    # Namoz sozlamasi
+    ADM_NAMOZ_SET,
+) = range(56)
 BRINZA_KEYWORDS = ["brinza", "brinza", "Brinza", "BRINZA"]
 
 def is_brinza(prod_name):
@@ -127,6 +133,7 @@ SHEET_HEADERS = {
     "Tolov":            ["Sana","Dist_ID","Dokon","Dokon_ID","Summa","Status","Tolov_ID"],
     "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Status","Izoh","Zakaz_ID"],
     "Vozvrat":          ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Voz_ID"],
+    "Sozlamalar":       ["Kalit","Qiymat","Sana"],
 }
 
 def get_ws(name):
@@ -315,6 +322,119 @@ def get_debt(dokon_id):
         return max(0.0, qarz - paid)
     except Exception: return 0.0
 
+# ── MOTIVATSIYA MATNLARI (50 ta) ─────────────────────────────────────────────
+MOTIVATSIYA = [
+    "💪 Barakalla! Siz bugun ham ajoyib ish qildingiz. Oilangiz sizni kutmoqda — uyga sog'-salomat boring!",
+    "🌟 Zo'r! Har bir qadamingiz oilangiz farovonligi uchun. Muvaffaqiyat sizniki!",
+    "🏆 Ajoyib! Halol mehnat — eng ulug' boylik. Oilangizga xursandchilik olib boring!",
+    "☀️ Kun yaxshi ketmoqda! Sog'lig'ingizni asrang, oilangiz siz bilan faxrlanadi.",
+    "🤲 Barakali ish qildingiz! Alloh rizqingizni keng qilsin. Uyga eson-omon boring!",
+    "💫 Zo'r natija! Ishingiz barakali bo'lsin. Oilangiz sog'-salomat uy bekasi kutmoqda.",
+    "🌈 Mukammal! Bugungi mehnatiz ertangi baxtingiz. Xavfsiz harakatlaning!",
+    "🎯 Maqsadga yana bir qadam! Oilangiz siz bilan g'ururlanadi. Sog'-salomat boring!",
+    "🌺 Halol rizq topmoqdasiz — bu eng ulug' ibodatlardan biri. Alloh qo'llasin!",
+    "⭐ Siz ajoyib distribyutorsiz! Uyga xotirjam va eson-omon qaytishingizni tilaymiz.",
+    "🦁 Kuchli odam! Bugun ham muvaffaqiyat bilan ishlash qildingiz. Oilangizni sog'ining!",
+    "🌿 Har bir tomchi terni Alloh ko'radi. Halol mehnat qilayotganingizdan xursandmiz!",
+    "🎊 Harakatingiz meva bermoqda! Uyga borib dam oling, oilangiz siz bilan baxtli.",
+    "💎 Qimmatli insonlar shunday ishlaydi — sidqidil va mashaqqat bilan. Barakalla!",
+    "🚀 Olg'a! Siz bugun ham ajoyib ish qildingiz. Havfsiz va sog' qaytishingizni tilaymiz.",
+    "🌙 Alloh rizqingizni ziyoda qilsin. Oilangizga tez yetib boring, ular kutmoqda!",
+    "🏅 Bugun ham g'alaba! Mehnatinggiz bekorga ketmaydi. Eson-omon uyga boring!",
+    "✨ Harakatingiz baraka topsin. Oila — eng ulug' ne'mat. Tez yetib boring!",
+    "🌻 Sog'liqni asrang, baxt oilada. Alloh asrasin va rizqingizni kengaytirsin!",
+    "💪 Mashaqqat — muvaffaqiyat onasi. Bugun ham zo'r ishlading. Uyga sog' boring!",
+    "🎵 Hayot go'zal, oila — eng katta boylik! Ular siz bilan faxrlanadi. Sog'-omon boring!",
+    "🌍 Halol mehnat Vatanga ham xizmat. Barakalla, Alloh madadingiz bo'lsin!",
+    "🦅 Baland parvoz qilmoqdasiz! Uyga borib oilangiz bilan vaqt o'tkazing, haq topasiz.",
+    "🌊 Har bir to'lqin qirg'oqqa yetadi — sizning harakatingiz ham maqsadga olib boradi!",
+    "🎁 Bugun qilgan mehnatiz ertaga farzandlaringizga sovg'a. Alloh kuchinggizni ziyoda qilsin!",
+    "🏡 Uyingiz — jannatning bir bo'lagi. Tez qaytib oilangiz bilan bo'ling!",
+    "💚 Sog'lik — eng katta ne'mat. Ehtiyotkorlik bilan harakatlaning, Alloh asrasin!",
+    "🕊️ Tinchlik va barakot sizniki bo'lsin. Oilangiz sog'-salomat uy burchini kutmoqda!",
+    "🌠 Yulduzlar siz kabi mehnatkesha odamlar uchun porlaydi. Barakalla, eson-omon boring!",
+    "🤝 Ishonchli va halol ish — eng yaxshi mulk. Oilangiz bilan baxtli bo'ling!",
+    "🌸 Bahordek yangi kuch bilan ishlayapsiz! Alloh bergan sog'likni asrang, uyga boring!",
+    "🦋 O'zgarish va rivojlanish sizda. Oilangiz farovonligi uchun mehnat qilayotganingizdan xursandmiz!",
+    "🎯 Aniq maqsad — katta g'alaba. Bugun ham maqsadingizga yetdingiz. Sog' qaytishinggizni tilaymiz!",
+    "💡 Aqlli va mehnatli odam — ikki dunyoda baxtli. Alloh siz bilan bo'lsin!",
+    "🏔️ Tog' kabi mustahkam, daryo kabi tinim bilmas. Zo'r ishlading. Eson-omon uyga boring!",
+    "🌴 Palma shamolda egiladi, lekin sinmaydi. Siz ham shunday — kuchli va bardoshli!",
+    "🦊 Chaqqon va aqlli! Bugun ham muvaffaqiyatli ish qildingiz. Oilangizni ko'rishga shoshing!",
+    "🌺 Gul kabi inson — boshqalarga ham xursandchilik ulashadigan. Barakalla, eson boring!",
+    "⚡ Energiyangiz baland! Shu kuch bilan uyga ham kiring, oilangiz siz bilan xursand!",
+    "🎋 Pishiq va ishonchli inson. Alloh rizqingizni uzmasin. Sog'-salomat qaytishinggizni tilaymiz!",
+    "🏄 To'lqinlarni yengib o'tmoqdasiz! Ajoyib. Oilangiz qirg'oqda kutmoqda, boring!",
+    "🌟 Har kuni yangi imkoniyat. Siz uni ishlatdingiz. Barakalla! Uyga xotirjam boring!",
+    "🎶 Hayot — musiqa, mehnat — ohang. Siz bugun go'zal kuy aytdingiz. Eson-omon boring!",
+    "🦉 Dono va tajribali. Bugungi ish ertaga tajriba bo'ladi. Alloh oilangizni asrasin!",
+    "🍀 Baxt to'rt bargli yoʻngichqaday kam — lekin siz uni topmoqdasiz! Oilangiz bilan baxtli bo'ling!",
+    "🌊 Dengiz chuqur, aql undan chuqur. Sizning mehnatinggiz g'oyat qadrli. Eson-omon boring!",
+    "🎠 Bugun qilgan ishingiz ertaga sababli bo'ladi. Alloh siz va oilangizni asrasin!",
+    "🏹 Maqsadga to'g'ri! Bugun ham a'lo natija. Sog' va eson uyga qaytishingizni tilaymiz!",
+    "🌈 Yomg'irdan keyin kamalak chiqadi — mashaqqatdan keyin baxt keladi. Oldinga!",
+    "💝 Oilangizga eng yaxshi sovg'a — o'zingiz sog'-salomat uyga qaytishingiz. Ehtiyot bo'ling!",
+]
+
+import random
+def get_motivatsiya():
+    return random.choice(MOTIVATSIYA)
+
+# ── NAMOZ VAQTLARI (TOSHKENT) ─────────────────────────────────────────────────
+# Har kuni taxminiy vaqtlar (oyma-oy o'zgaradi)
+# Asl vaqtlar API dan olinishi kerak, lekin taxminiy jadval shu
+# Format: (oy, kun): (bomdod_soat, bomdod_daqiqa, quyosh, peshin, asr, shom, xufton)
+
+NAMOZ_VAQTLARI_TOSHKENT = {
+    # Yanvar
+    1:  [(6,25),(8,5),(12,50),(15,35),(17,40),(19,25)],
+    2:  [(5,55),(7,45),(12,55),(15,55),(18,5),(19,50)],
+    3:  [(5,15),(7,10),(13,0),(16,15),(18,30),(20,15)],
+    4:  [(4,25),(6,25),(13,5),(16,40),(19,0),(20,45)],
+    5:  [(3,45),(5,50),(13,10),(17,5),(19,30),(21,20)],
+    6:  [(3,20),(5,30),(13,15),(17,20),(20,0),(21,50)],
+    7:  [(3,30),(5,40),(13,15),(17,20),(20,5),(21,55)],
+    8:  [(4,0),(6,5),(13,10),(17,0),(19,30),(21,20)],
+    9:  [(4,35),(6,30),(13,0),(16,30),(18,55),(20,40)],
+    10: [(5,10),(7,0),(12,50),(16,0),(18,15),(19,55)],
+    11: [(5,45),(7,30),(12,45),(15,30),(17,35),(19,15)],
+    12: [(6,15),(8,0),(12,45),(15,15),(17,15),(19,0)],
+}
+
+def get_namoz_vaqtlari(oy=None):
+    """Joriy oy namoz vaqtlari: [bomdod, quyosh, peshin, asr, shom, xufton]"""
+    if oy is None: oy = datetime.now().month
+    vaqtlar = NAMOZ_VAQTLARI_TOSHKENT.get(oy, NAMOZ_VAQTLARI_TOSHKENT[1])
+    nomlar = ["Bomdod", "Quyosh chiqishi", "Peshin", "Asr", "Shom", "Xufton"]
+    return [(nomlar[i], vaqtlar[i][0], vaqtlar[i][1]) for i in range(len(vaqtlar))]
+
+
+# ── SOZLAMALAR ────────────────────────────────────────────────────────────────
+def get_setting(kalit, default="1"):
+    try:
+        for r in db_all("Sozlamalar"):
+            if r.get("Kalit","") == kalit:
+                return str(r.get("Qiymat", default))
+        return default
+    except Exception: return default
+
+def set_setting(kalit, qiymat):
+    try:
+        w = get_ws("Sozlamalar")
+        if not w: return
+        recs = w.get_all_records()
+        for i, r in enumerate(recs):
+            if r.get("Kalit","") == kalit:
+                w.update_cell(i+2, 2, str(qiymat))
+                w.update_cell(i+2, 3, now_str())
+                return
+        w.append_row([kalit, str(qiymat), now_str()])
+    except Exception as e: logger.error(f"set_setting: {e}")
+
+def namoz_yoqilgan():
+    return get_setting("namoz_eslatma", "1") == "1"
+
+
 def calc_foyda(dist_uid_str, from_date_str=None):
     try:
         tops = [r for r in db_all("Topshirish") if str(r.get("Dist_ID",""))==dist_uid_str and r.get("Status","")=="tasdiqlangan"]
@@ -442,6 +562,7 @@ T = {
     "adm_add_dist":     {"uz":"🚚 Distribyutor qo'shish","ru":"🚚 Добавить дистрибьютора"},
     "adm_stats":        {"uz":"📊 Statistika","ru":"📊 Статистика"},
     "adm_broadcast":    {"uz":"📢 Xabar yuborish","ru":"📢 Рассылка"},
+    "adm_namoz":        {"uz":"🕌 Namoz eslatmasi","ru":"🕌 Напоминание о намазе"},
     "adm_debtors":      {"uz":"💸 Qarzdorlar","ru":"💸 Должники"},
     "adm_list_stores":  {"uz":"🏪 Do'konlar","ru":"🏪 Магазины"},
     "adm_list_dists":   {"uz":"🚚 Distribyutorlar","ru":"🚚 Дистрибьюторы"},
@@ -496,6 +617,7 @@ def admin_kb(la):
         [tx("adm_stats",la), tx("adm_debtors",la)],
         [tx("adm_list_stores",la), tx("adm_list_dists",la)],
         [tx("adm_zavod_list",la), tx("adm_broadcast",la)],
+        [tx("adm_namoz",la)],
         [tx("back",la)],
     ], resize_keyboard=True)
 
@@ -685,7 +807,11 @@ async def zok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if r.get("Qabul_ID","")==qid:
             try:
                 u=get_user(r.get("Dist_ID","")); la=u.get("Til","uz") if u else "uz"
+                # Asosiy xabar
                 await ctx.bot.send_message(int(r.get("Dist_ID",0)),tx("zavod_ok",la))
+                # Motivatsiya xabari
+                motiv = get_motivatsiya()
+                await ctx.bot.send_message(int(r.get("Dist_ID",0)), f"\n{motiv}")
             except Exception: pass
             break
 
@@ -713,9 +839,22 @@ async def top_store(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t not in [s.get("Nomi","") for s in stores]:
         await upd.message.reply_text(tx("store",la),reply_markup=store_kb(stores,la)); return TOP_STORE
     store=next(s for s in stores if s.get("Nomi","")==t); ctx.user_data["s"]=store
-    debt=get_debt(str(store.get("ID",""))); msg=tx("prod",la)
-    if debt>0: msg=f"⚠️ Qarz: {debt:,.0f}\n\n"+msg
-    await upd.message.reply_text(msg,reply_markup=prod_kb(la)); return TOP_PROD
+    store_id=str(store.get("ID",""))
+    debt=get_debt(store_id)
+    store_orders=[r for r in db_all("Buyurtmalar")
+                  if str(r.get("Dokon_ID",""))==store_id and r.get("Status","")=="Yangi"]
+    ctx.user_data["store_orders"]=store_orders
+    msg=""
+    if store_orders:
+        msg+="📋 <b>Do'konning zakazlari:</b>\n"
+        for r in store_orders:
+            pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
+            unit=r.get("Birlik","") or ""
+            msg+=f"  • {pn}: {format_qty(qty,unit,prod_name=pn,topshirish=False)}\n"
+        msg+="\n"
+    if debt>0: msg+=f"⚠️ Qarz: {debt:,.0f}\n\n"
+    msg+=tx("prod",la)
+    await upd.message.reply_text(msg,reply_markup=_ombor_prod_kb_markup(uid,la),parse_mode="HTML"); return TOP_PROD
 
 async def top_prod(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); t=upd.message.text; uid=upd.effective_user.id
@@ -800,6 +939,10 @@ async def top_pay_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("back",la): return TOP_PHOTO
     if t==tx("realizatsiya",la):
         ctx.user_data["pay_type"]="realizatsiya"; ctx.user_data["top_naqd"]=0.0
+        # Zakaz vs qty tekshirish
+        qty=ctx.user_data.get("top_qty",0)
+        warned=await _check_qty_vs_zakaz(upd,ctx,qty)
+        if warned: return TOP_PAY_TYPE  # ogoh. ko'rsatildi, javob kutiladi
         # Vozvrat so'rash
         ctx.user_data["voz_after_pay"]=True
         bor = "Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
@@ -808,8 +951,26 @@ async def top_pay_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
             reply_markup=ReplyKeyboardMarkup([[bor],[yoq]], resize_keyboard=True))
         return VOZ_HAL
+    # Qty ogohlantirish javobi
+    if t in ("✅ Ha, davom et","✅ Да, продолжаем"):
+        ctx.user_data.pop("_pending_save",None)
+        bor="Ha, vozvrat bor" if la=="uz" else "Да, есть возврат"
+        yoq="Yo'q, vozvrat yo'q" if la=="uz" else "Нет, возврата нет"
+        await upd.message.reply_text(
+            "📦 Qaytarilgan tovar (vozvrat) bormi?" if la=="uz" else "📦 Есть ли возврат товара?",
+            reply_markup=ReplyKeyboardMarkup([[bor],[yoq]],resize_keyboard=True))
+        return VOZ_HAL
+    if t in ("❌ Yo'q, qaytaman","❌ Нет, вернуться"):
+        ctx.user_data.pop("_pending_save",None)
+        await upd.message.reply_text(
+            "Miqdorni qaytadan kiriting:" if la=="uz" else "Введите количество заново:",
+            reply_markup=back_kb(la))
+        return TOP_PHOTO
     if t==tx("naqd",la):
         ctx.user_data["pay_type"]="naqd"
+        qty=ctx.user_data.get("top_qty",0)
+        warned=await _check_qty_vs_zakaz(upd,ctx,qty)
+        if warned: return TOP_PAY_TYPE
         await upd.message.reply_text(tx("top_naqd_sum",la),reply_markup=back_kb(la)); return TOP_PAY_AMOUNT
     return TOP_PAY_TYPE
 
@@ -964,6 +1125,35 @@ async def _save_top_with_voz(upd, ctx):
     await upd.message.reply_text(msg, reply_markup=store_kb(ctx.user_data.get("stores",[]),la))
     ctx.user_data.pop("voz_jami",None)
 
+
+async def _check_qty_vs_zakaz(upd, ctx, qty):
+    """Berilayotgan miqdor zakazdan ko'p bo'lsa ogohlantirish"""
+    la=lg(ctx)
+    p=ctx.user_data.get("p",{}); store_orders=ctx.user_data.get("store_orders",[])
+    prod_name=p.get(la,"")
+    zakaz_qty=0
+    for r in store_orders:
+        if r.get("Mahsulot","") == prod_name:
+            zakaz_qty+=float(r.get("Miqdor",0) or 0)
+    if zakaz_qty>0 and qty>zakaz_qty:
+        diff=qty-zakaz_qty
+        unit=p.get("unit","")
+        zakaz_str=format_qty(zakaz_qty,unit,prod_name=prod_name,topshirish=True)
+        extra_str=format_qty(diff,unit,prod_name=prod_name,topshirish=True)
+        msg=(f"🎉 Ajoyib! Do'kon {zakaz_str} zakaz qilgan edi, sen {extra_str} qo'shimcha beryapsan — bu savdo mahorati!\n\n"
+             f"⚠️ Lekin shoshilma: zakaz {zakaz_str}, qo'shimcha {extra_str}. Adashmadinmi?\n\n"
+             f"Davom etamizmi?" if la=="uz" else
+             f"🎉 Отлично! Магазин заказал {zakaz_str}, а ты даёшь на {extra_str} больше — это мастерство!\n\n"
+             f"⚠️ Но проверь: заказ {zakaz_str}, дополнительно {extra_str}. Всё верно?\n\n"
+             f"Продолжаем?")
+        ctx.user_data["_pending_save"]=True
+        await upd.message.reply_text(msg,
+            reply_markup=ReplyKeyboardMarkup(
+                [["✅ Ha, davom et" if la=="uz" else "✅ Да, продолжаем"],
+                 ["❌ Yo'q, qaytaman" if la=="uz" else "❌ Нет, вернуться"]],
+                resize_keyboard=True))
+        return True  # Ogohlantirish chiqdi, kutish kerak
+    return False  # Hamma narsa normal, davom etish mumkin
 
 async def _save_top(upd, ctx):
     la=lg(ctx); uid=upd.effective_user.id
@@ -1329,6 +1519,8 @@ async def _show_buyurtmalar(upd,ctx):
                 unit_j = r2.get("Birlik","") or ""
                 break
         lines.append(f"  • {prod}: {format_qty(qty, unit_j, prod_name=prod, topshirish=False)}")
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("✏️ O'zgartirish: /zakaz_edit_ZAKAZ_ID" if la=="uz" else "✏️ Изменить: /zakaz_edit_ZAKAZ_ID")
     await upd.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def _show_my_stores(upd,ctx):
@@ -1348,13 +1540,15 @@ async def _show_my_stores(upd,ctx):
         debt_str = f"\n💸 Qarz: {debt:,.0f} so'm" if debt>0 else ""
         mchj = s.get("MCHJ","") or "—"
         tel2 = s.get("Tel2","") or "—"
+        dokon_id_s = str(s.get("ID",""))
         card = (
             f"🏪 <b>{i}. {s.get('Nomi','')}</b>{debt_str}\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📍 <b>Manzil:</b> {s.get('Adres','—')}\n"
             f"🏢 <b>MCHJ:</b> {mchj}\n"
             f"📞 <b>Tel 1:</b> {s.get('Tel1','—')}\n"
-            f"📞 <b>Tel 2:</b> {tel2}"
+            f"📞 <b>Tel 2:</b> {tel2}\n"
+            f"✏️ /dokon_edit_{dokon_id_s}"
         )
         await upd.message.reply_text(card, parse_mode="HTML")
     # Oxirida buyurtma va qo'shish tugmalari
@@ -1515,6 +1709,12 @@ async def admin_h(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if t==tx("adm_zavod_list",la):  await a_zavod_list(upd,ctx); return ADMIN_MENU
     if t==tx("adm_broadcast",la):
         await upd.message.reply_text(tx("broadcast_msg",la),reply_markup=back_kb(la)); return ADM_BROADCAST
+    if t==tx("adm_namoz",la):
+        yoq = not namoz_yoqilgan()
+        set_setting("namoz_eslatma","1" if yoq else "0")
+        status = ("✅ Yoqildi" if yoq else "❌ O'chirildi") if la=="uz" else ("✅ Включено" if yoq else "❌ Выключено")
+        await upd.message.reply_text(f"🕌 Namoz eslatmasi: {status}",reply_markup=admin_kb(la),parse_mode="HTML")
+        return ADMIN_MENU
     await upd.message.reply_text(tx("adm",la),reply_markup=admin_kb(la),parse_mode="HTML"); return ADMIN_MENU
 
 async def adm_mahsulot_nom(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1715,6 +1915,62 @@ async def auto_zakaz_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"auto_zakaz_reminder: {e}")
 
+async def namoz_eslatma(ctx: ContextTypes.DEFAULT_TYPE):
+    """Har 5 daqiqada tekshiradi: 30 daqiqa qolganida namoz eslatmasi"""
+    if not namoz_yoqilgan(): return
+    try:
+        now = datetime.now()
+        oy = now.month
+        vaqtlar = get_namoz_vaqtlari(oy)
+        target_time = None
+        target_nomi = None
+        for nom, soat, daqiqa in vaqtlar:
+            namoz_dt = now.replace(hour=soat, minute=daqiqa, second=0, microsecond=0)
+            diff = (namoz_dt - now).total_seconds() / 60
+            if 28 <= diff <= 32:
+                target_time = namoz_dt
+                target_nomi = nom
+                break
+        if not target_nomi: return
+
+        def make_msg(la, nomi, vaqt):
+            if la == "uz":
+                return (f"🕌 <b>{nomi} vaqti yaqinlashmoqda!</b>\n"
+                        f"⏰ Vaqt: {vaqt.strftime('%H:%M')}\n"
+                        f"(30 daqiqa qoldi)\n\n"
+                        f"Namoz — mo'minin uchun eng muhim ibodatlardan biri.\n"
+                        f"Vaqtida o'qing! 🤲")
+            else:
+                return (f"🕌 <b>Время {nomi} приближается!</b>\n"
+                        f"⏰ Время: {vaqt.strftime('%H:%M')}\n"
+                        f"(30 минут осталось)\n\n"
+                        f"Намаз — важнейшая обязанность мусульманина. 🤲")
+
+        # Barcha ro'yxatdagi foydalanuvchilar
+        users = db_all("Foydalanuvchilar")
+        sent_ids = set()
+        for u in users:
+            if not is_approved(u.get("TG_ID","")): continue
+            try:
+                uid_int = int(u.get("TG_ID",0))
+                if uid_int in sent_ids: continue
+                sent_ids.add(uid_int)
+                la = u.get("Til","uz")
+                await ctx.bot.send_message(uid_int, make_msg(la, target_nomi, target_time), parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"namoz eslatma user: {e}")
+
+        # Adminlarga ham (agar sheets da yo'q bo'lsa)
+        for admin_id in ADMIN_IDS:
+            if admin_id in sent_ids: continue
+            try:
+                await ctx.bot.send_message(admin_id, make_msg("uz", target_nomi, target_time), parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"namoz eslatma admin: {e}")
+
+    except Exception as e:
+        logger.error(f"namoz_eslatma: {e}")
+
 async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     """
     Har soatda tekshiradi: 24 soat oldin topshirilgan tovarlar haqida
@@ -1841,6 +2097,172 @@ async def zakaz_from_store_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _show_my_stores(upd,ctx)
     return DI_NAME
 
+# ── ZAKAZ TAHRIRLASH ──────────────────────────────────────────────────────────
+async def zakaz_edit_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Zakaz o'zgartirish buyrug'i: /zakaz_edit_ZAKAZ_ID"""
+    m = re.search(r'/zakaz_edit_(\w+)', upd.message.text or "")
+    if not m: return
+    zakaz_id = m.group(1)
+    la = lg(ctx)
+    # Zakaz topish
+    zakazlar = db_all("Buyurtmalar")
+    zakaz = next((r for r in zakazlar if r.get("Zakaz_ID","") == zakaz_id), None)
+    if not zakaz:
+        await upd.message.reply_text("❌ Zakaz topilmadi."); return
+    if zakaz.get("Status","") not in ("Yangi","Qabul_qilindi"):
+        await upd.message.reply_text("❌ Bu zakazni o'zgartirish mumkin emas (rad etilgan yoki yopilgan).")
+        return
+    ctx.user_data["edit_zakaz_id"] = zakaz_id
+    ctx.user_data["edit_zakaz"] = zakaz
+    prod = zakaz.get("Mahsulot","")
+    qty = float(zakaz.get("Miqdor",0) or 0)
+    unit_str = "dona" if is_brinza(prod) else zakaz.get("Birlik","")
+    await upd.message.reply_text(
+        f"✏️ Zakazni o'zgartirish:\n"
+        f"📦 {prod}: {format_qty(qty, unit_str, prod_name=prod, topshirish=False)}\n"
+        f"🏪 {zakaz.get('Dokon','')}\n\n"
+        f"Yangi miqdorni kiriting (yoki Orqaga):" if la=="uz" else
+        f"✏️ Изменить заказ:\n"
+        f"📦 {prod}: {format_qty(qty, unit_str, prod_name=prod, topshirish=False)}\n"
+        f"🏪 {zakaz.get('Dokon','')}\n\n"
+        f"Введите новое количество (или Назад):",
+        reply_markup=ReplyKeyboardMarkup([[tx("back",la)]], resize_keyboard=True))
+    return ZAKAZ_EDIT_QTY
+
+async def zakaz_edit_qty(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx); t = upd.message.text or ""
+    if t == tx("back",la):
+        sid = get_short_id(upd.effective_user.id)
+        await upd.message.reply_text(tx("main",la,sid=sid),
+            reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
+        return MAIN_MENU
+    zakaz = ctx.user_data.get("edit_zakaz",{})
+    prod = zakaz.get("Mahsulot","")
+    zakaz_id = ctx.user_data.get("edit_zakaz_id","")
+    if is_brinza(prod):
+        try: qty = int(float(t.strip().replace(",",".")))
+        except: qty = 0
+        if qty <= 0:
+            await upd.message.reply_text("Butun son kiriting (dona):"); return ZAKAZ_EDIT_QTY
+    else:
+        qty = parse_weight(t)
+        if qty <= 0:
+            await upd.message.reply_text(tx("err_num",la)); return ZAKAZ_EDIT_QTY
+    # Yangilash
+    try:
+        w = get_ws("Buyurtmalar")
+        if w:
+            headers = w.row_values(1)
+            recs = w.get_all_records()
+            for i, r in enumerate(recs):
+                if r.get("Zakaz_ID","") == zakaz_id:
+                    w.update_cell(i+2, headers.index("Miqdor")+1, str(qty))
+                    break
+    except Exception as e: logger.error(f"zakaz_edit: {e}")
+    unit_str = "dona" if is_brinza(prod) else zakaz.get("Birlik","")
+    qty_str = format_qty(qty, unit_str, prod_name=prod, topshirish=False)
+    await upd.message.reply_text(
+        f"✅ Zakaz yangilandi!\n📦 {prod}: {qty_str}" if la=="uz"
+        else f"✅ Заказ обновлён!\n📦 {prod}: {qty_str}")
+    sid = get_short_id(upd.effective_user.id)
+    await upd.message.reply_text(tx("main",la,sid=sid),
+        reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
+    return MAIN_MENU
+
+# ── DO'KON MA'LUMOTLARINI O'ZGARTIRISH ────────────────────────────────────────
+async def dokon_edit_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Do'kon tahrirlash: /dokon_edit_ID"""
+    m = re.search(r'/dokon_edit_(\d+)', upd.message.text or "")
+    if not m: return
+    dokon_id = m.group(1); la = lg(ctx)
+    stores = db_all("Dokonlar")
+    store = next((s for s in stores if str(s.get("ID",""))==dokon_id), None)
+    if not store:
+        await upd.message.reply_text("❌ Do'kon topilmadi."); return
+    ctx.user_data["edit_dokon_id"] = dokon_id
+    ctx.user_data["edit_dokon"] = dict(store)  # nusxa
+    fields = {
+        "1": "Nomi", "2": "Adres", "3": "MCHJ",
+        "4": "Tel1", "5": "Tel2"
+    }
+    lines = [f"✏️ <b>{store.get('Nomi','')} ma'lumotlarini o'zgartirish:</b>\n"]
+    for k,v in fields.items():
+        lines.append(f"{k}. {v}: <i>{store.get(v,'—')}</i>")
+    lines.append("\nO'zgartirmoqchi bo'lgan raqamni yuboring:")
+    await upd.message.reply_text(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            [["1","2","3"],["4","5"],["🔙 Orqaga"]],
+            resize_keyboard=True))
+    return DOKON_EDIT_FIELD
+
+async def dokon_edit_field(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx); t = upd.message.text or ""
+    if t in ("🔙 Orqaga","🔙 Назад","Orqaga"):
+        sid = get_short_id(upd.effective_user.id)
+        await upd.message.reply_text(tx("main",la,sid=sid),
+            reply_markup=main_kb(la,sid,upd.effective_user.id in ADMIN_IDS),parse_mode="HTML")
+        return MAIN_MENU
+    field_map = {"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2"}
+    field = field_map.get(t)
+    if not field:
+        await upd.message.reply_text("1-5 raqam yuboring:"); return DOKON_EDIT_FIELD
+    ctx.user_data["edit_field"] = field
+    store = ctx.user_data.get("edit_dokon",{})
+    await upd.message.reply_text(
+        f"<b>{field}</b> ni o'zgartirish\n"
+        f"Joriy: <i>{store.get(field,'—')}</i>\n\n"
+        f"Yangi qiymatni kiriting:",
+        parse_mode="HTML", reply_markup=back_kb(la))
+    return DOKON_EDIT_VAL
+
+async def dokon_edit_val(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    la = lg(ctx); t = upd.message.text or ""
+    if t == tx("back",la):
+        return await dokon_edit_cmd_restart(upd, ctx)
+    field = ctx.user_data.get("edit_field","")
+    dokon_id = ctx.user_data.get("edit_dokon_id","")
+    # Joriy qiymatni saqlash (vozvrat uchun)
+    old_store = ctx.user_data.get("edit_dokon",{})
+    old_val = old_store.get(field,"")
+    # Google Sheets da yangilash
+    try:
+        w = get_ws("Dokonlar")
+        if w:
+            headers = w.row_values(1)
+            recs = w.get_all_records()
+            for i, r in enumerate(recs):
+                if str(r.get("ID","")) == dokon_id:
+                    w.update_cell(i+2, headers.index(field)+1, t.strip())
+                    break
+    except Exception as e: logger.error(f"dokon_edit: {e}")
+    # Local nusxani yangilash
+    ctx.user_data["edit_dokon"][field] = t.strip()
+    await upd.message.reply_text(
+        f"✅ O'zgartirildi!\n"
+        f"<b>{field}</b>: <s>{old_val}</s> → <b>{t.strip()}</b>\n\n"
+        f"Boshqa maydon o'zgartirish uchun raqam yuboring:",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            [["1","2","3"],["4","5"],["🔙 Orqaga"]],
+            resize_keyboard=True))
+    return DOKON_EDIT_FIELD
+
+async def dokon_edit_cmd_restart(upd, ctx):
+    """Do'kon tahrirlash menyusini qayta ko'rsatish"""
+    la = lg(ctx)
+    store = ctx.user_data.get("edit_dokon",{})
+    dokon_id = ctx.user_data.get("edit_dokon_id","")
+    fields = {"1":"Nomi","2":"Adres","3":"MCHJ","4":"Tel1","5":"Tel2"}
+    lines = [f"✏️ <b>{store.get('Nomi','')} ma'lumotlarini o'zgartirish:</b>\n"]
+    for k,v in fields.items():
+        lines.append(f"{k}. {v}: <i>{store.get(v,'—')}</i>")
+    lines.append("\nO'zgartirmoqchi bo'lgan raqamni yuboring:")
+    await upd.message.reply_text("\n".join(lines), parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup([["1","2","3"],["4","5"],["🔙 Orqaga"]],resize_keyboard=True))
+    return DOKON_EDIT_FIELD
+
+
 async def cancel(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     la=lg(ctx); uid=upd.effective_user.id
     sid=get_short_id(uid)
@@ -1856,6 +2278,8 @@ def main():
     app.job_queue.run_daily(auto_zakaz_reminder, time=dtime(20,0))
     # Har soatda 24h topshirish eslatmasi
     app.job_queue.run_repeating(tovar_24h_reminder, interval=3600, first=60)
+    # Har 5 daqiqada namoz vaqti tekshiruvi
+    app.job_queue.run_repeating(namoz_eslatma, interval=300, first=30)
 
     txt      = filters.TEXT & ~filters.COMMAND
     photo_txt= (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
@@ -1883,6 +2307,11 @@ def main():
             VOZ_HAL:            [MessageHandler(txt,voz_hal)],
             VOZ_PROD:           [MessageHandler(txt,voz_prod)],
             VOZ_QTY:            [MessageHandler(txt,voz_qty)],
+            ZAKAZ_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
+            ZAKAZ_EDIT_QTY:     [MessageHandler(txt,zakaz_edit_qty)],
+            DOKON_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
+            DOKON_EDIT_FIELD:   [MessageHandler(txt,dokon_edit_field)],
+            DOKON_EDIT_VAL:     [MessageHandler(txt,dokon_edit_val)],
             ZAKAZ_COMMENT:      [MessageHandler(txt,zakaz_comment)],
             DI_NAME:            [MessageHandler(txt,di_name)],
             ZAKAZ_FROM_STORE_PROD:[MessageHandler(txt,zakaz_from_store_prod)],
@@ -1921,6 +2350,8 @@ def main():
     )
     for pattern,handler in [
         (r'^/approve_\d+$', approve_cmd),
+        (r'^/zakaz_edit_\w+$', zakaz_edit_cmd),
+        (r'^/dokon_edit_\d+$', dokon_edit_cmd),
         (r'^/reject_\d+$',  reject_cmd),
         (r'^/zok_\w+$',     zok_cmd),
         (r'^/zrad_\w+$',    zrad_cmd),
