@@ -43,7 +43,7 @@ ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") 
     ST_ADM_DOKON_NAME, ST_ADM_DOKON_ADDR, ST_ADM_DOKON_DIST,
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
-) = range(40)
+) = range(41)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
