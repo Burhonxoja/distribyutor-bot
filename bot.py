@@ -2295,7 +2295,11 @@ def main():
             REG_PHONE:          [MessageHandler(cont_txt,reg_phone)],
             REG_PASSPORT:       [MessageHandler((filters.PHOTO|filters.TEXT)&~filters.COMMAND,reg_passport)],
             WAIT_APPROVE:       [MessageHandler(txt,wait_approve_h)],
-            MAIN_MENU:          [MessageHandler(txt,main_h)],
+            MAIN_MENU:          [
+                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
+                MessageHandler(filters.Regex(r'^/zakaz_edit_\w+$'), zakaz_edit_cmd),
+                MessageHandler(txt, main_h),
+            ],
             DIST_LINK_ID:       [MessageHandler(txt,lambda u,c: MAIN_MENU)],  # placeholder
             ZAVOD_PROD:         [MessageHandler(txt,zavod_prod)],
             ZAVOD_QTY:          [MessageHandler(txt,zavod_qty)],
@@ -2310,10 +2314,17 @@ def main():
             ZAKAZ_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
             ZAKAZ_EDIT_QTY:     [MessageHandler(txt,zakaz_edit_qty)],
             DOKON_EDIT_SELECT:  [MessageHandler(txt,lambda u,c: MAIN_MENU)],
-            DOKON_EDIT_FIELD:   [MessageHandler(txt,dokon_edit_field)],
+            DOKON_EDIT_FIELD:   [
+                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
+                MessageHandler(txt, dokon_edit_field),
+            ],
             DOKON_EDIT_VAL:     [MessageHandler(txt,dokon_edit_val)],
             ZAKAZ_COMMENT:      [MessageHandler(txt,zakaz_comment)],
-            DI_NAME:            [MessageHandler(txt,di_name)],
+            DI_NAME:            [
+                MessageHandler(filters.Regex(r'^/dokon_edit_\d+$'), dokon_edit_cmd),
+                MessageHandler(filters.Regex(r'^/zakaz_edit_\w+$'), zakaz_edit_cmd),
+                MessageHandler(txt, di_name),
+            ],
             ZAKAZ_FROM_STORE_PROD:[MessageHandler(txt,zakaz_from_store_prod)],
             ZAKAZ_FROM_STORE_QTY: [MessageHandler(txt,zakaz_from_store_qty)],
             DI_ADDR:            [MessageHandler(txt,di_addr)],
