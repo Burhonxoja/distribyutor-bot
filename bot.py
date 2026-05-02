@@ -43,7 +43,7 @@ ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") 
     ST_ADM_DOKON_NAME, ST_ADM_DOKON_ADDR, ST_ADM_DOKON_DIST,
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
-) = range(41)
+) = range(40)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
@@ -1896,6 +1896,78 @@ async def tovar_24h_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e: logger.error(f"tovar_24h: {e}")
 
 
+async def tovar_5kun_almashtirish(ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Har kuni tekshiradi: 5 kun oldin mol berilgan do'konlar uchun
+    yangi buyurtma bo'lmasa — tovarni almashtirish eslatmasi yuboriladi.
+    """
+    try:
+        now = datetime.now()
+        besh_kun_oldin = (now - timedelta(days=5)).strftime("%Y-%m-%d")
+        olti_kun_oldin = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+
+        tops = db_all("Topshirish")
+        buyurtmalar = db_all("Buyurtmalar")
+
+        # 5-6 kun oldin topshirilgan (aniq 5 kun o'tgan)
+        relevant_tops = [
+            r for r in tops
+            if r.get("Status","")=="tasdiqlangan"
+            and olti_kun_oldin <= str(r.get("Sana",""))[:10] <= besh_kun_oldin
+        ]
+
+        for top in relevant_tops:
+            dist_id = str(top.get("Dist_ID",""))
+            dokon_id = str(top.get("Dokon_ID",""))
+            dokon = top.get("Dokon","")
+            mahsulot = top.get("Mahsulot","")
+
+            if not dist_id or not dokon_id: continue
+
+            # Shu do'kondan shu mahsulot uchun so'nggi 5 kunda yangi buyurtma bormi?
+            yangi_zakaz = any(
+                b for b in buyurtmalar
+                if str(b.get("Dokon_ID",""))==dokon_id
+                and b.get("Mahsulot","")==mahsulot
+                and str(b.get("Sana",""))[:10] >= besh_kun_oldin
+            )
+
+            if yangi_zakaz:
+                continue  # Buyurtma bor — eslatma shart emas
+
+            try:
+                du = get_user(dist_id)
+                if not du: continue
+                qty = float(top.get("Miqdor",0) or 0)
+                unit = top.get("Birlik","")
+                qty_str = fmt_qty(qty, unit, mahsulot, topshirish=False)
+                sana = str(top.get("Sana",""))[:10]
+
+                msg = (
+                    f"🔄 <b>TOVAR ALMASHTIRISH ESLATMASI</b>\n"
+                    f"━━━━━━━━━━━━━━━━\n"
+                    f"🏪 Do'kon: <b>{dokon}</b>\n"
+                    f"📦 Mahsulot: {mahsulot} — {qty_str}\n"
+                    f"📅 Berilgan: {sana}\n\n"
+                    f"⚠️ 5 kun o'tdi, yangi buyurtma yo'q!\n"
+                    f"Tovarni almashtirish yoki tekshirish vaqti bo'lishi mumkin.\n\n"
+                    f"Do'kon bilan bog'laning! 📞"
+                )
+
+                stores = db_all("Dokonlar")
+                store = next((s for s in stores if str(s.get("ID",""))==dokon_id), None)
+                if store:
+                    tel = store.get("Tel1","")
+                    if tel: msg += f"\n📞 {tel}"
+
+                await ctx.bot.send_message(int(dist_id), msg, parse_mode="HTML")
+
+            except Exception as e:
+                logger.error(f"5kun_almashtirish dist {dist_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"tovar_5kun_almashtirish: {e}")
+
 def main():
     if not BOT_TOKEN: print("BOT_TOKEN yo'q!"); return
     app = Application.builder().token(BOT_TOKEN).build()
@@ -1904,6 +1976,8 @@ def main():
     app.job_queue.run_daily(debt_reminder, time=dtime(9,0))
     app.job_queue.run_daily(auto_zakaz_reminder, time=dtime(20,0))
     app.job_queue.run_repeating(tovar_24h_reminder, interval=3600, first=60)
+    # Har kuni 10:00 da 5 kunlik almashtirish eslatmasi
+    app.job_queue.run_daily(tovar_5kun_almashtirish, time=dtime(10,0))
 
     txt  = filters.TEXT & ~filters.COMMAND
     photo_txt = (filters.PHOTO | filters.TEXT) & ~filters.COMMAND
