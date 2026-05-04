@@ -43,7 +43,8 @@ ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") 
     ST_ADM_DOKON_NAME, ST_ADM_DOKON_ADDR, ST_ADM_DOKON_DIST,
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
-) = range(41)
+    ST_TOLOV_SUMMA,
+) = range(42)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
@@ -1177,19 +1178,106 @@ async def buyurtma_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def tolov_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """To'lov qabul qilish — do'konlarni inline tugmalar bilan ko'rsatish"""
     la_ = la(ctx); uid = str(upd.effective_user.id)
     stores = get_stores(dist_id=uid)
-    lines=["💸 <b>Qarzdorlar:</b>","━━━━━━━━━━━━━━━━"]; total=0; rows=[]
-    for s in stores:
-        debt=get_debt(str(s.get("ID","")))
-        if debt>0:
-            lines.append(f"• {s.get('Nomi','')}: {debt:,.0f} so'm")
-            total+=debt
-    if len(lines)==2: lines.append("Qarz yo'q!" if la_=="uz" else "Долгов нет!")
-    else: lines.append(f"━━━━━━━━━━━━━━━━\nJami: {total:,.0f}")
-    lines.append("\nTo'lovni tasdiqlash: /vok_TOLOV_ID")
-    await edit_or_send(upd,ctx,"\n".join(lines),back_ik("m:main"))
+    qarzdor = [(s, get_debt(str(s.get("ID","")))) for s in stores]
+    qarzdor = [(s,d) for s,d in qarzdor if d > 0]
+
+    if not qarzdor:
+        await edit_or_send(upd, ctx,
+            "✅ Barcha do'konlar qarzini to'lagan!" if la_=="uz" else "✅ Все долги погашены!",
+            back_ik("m:main"))
+        return ST_MAIN
+
+    total = sum(d for _,d in qarzdor)
+    lines = ["💸 <b>Qarzdorlar:</b>", "━━━━━━━━━━━━━━━━"]
+    rows = []
+    for s, debt in qarzdor:
+        sid = str(s.get("ID",""))
+        lines.append(f"• {s.get('Nomi','')}: {debt:,.0f} so'm")
+        rows.append([(f"💵 {s.get('Nomi','')} — to'lov qabul", f"tolov_s:{sid}")])
+    lines.append(f"━━━━━━━━━━━━━━━━\nJami: {total:,.0f}")
+    rows.append([("🔙 Orqaga", "m:main")])
+
+    await edit_or_send(upd, ctx, "\n".join(lines), ikr(*rows))
     return ST_MAIN
+
+async def tolov_store_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Do'kon tanlandi — summa kiritish yoki to'liq yopish"""
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    store_id = q.data.split(":")[1]
+    uid = str(upd.effective_user.id)
+    stores = get_stores(dist_id=uid)
+    store = next((s for s in stores if str(s.get("ID",""))==store_id), None)
+    if not store: return ST_MAIN
+    debt = get_debt(store_id)
+    ctx.user_data["tolov_store"] = store
+    ctx.user_data["tolov_store_id"] = store_id
+    ctx.user_data["tolov_debt"] = debt
+    await q.edit_message_text(
+        f"💵 <b>{store.get('Nomi','')}</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"💸 Joriy qarz: {debt:,.0f} so'm\n\n"
+        f"Qabul qilinadigan summani kiriting\n"
+        f"(To'liq yopish uchun {debt:,.0f} ni kiriting):",
+        reply_markup=ikr(
+            [(f"✅ To'liq yopish ({debt:,.0f})", f"tolov_full:{store_id}")],
+            [("🔙 Orqaga", "m:tolov")]
+        ),
+        parse_mode="HTML")
+    return ST_TOLOV_SUMMA
+
+async def tolov_full_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """To'liq qarzni yopish"""
+    q = upd.callback_query; await answer(q); la_ = la(ctx)
+    store_id = q.data.split(":")[1]
+    store = ctx.user_data.get("tolov_store", {})
+    debt = ctx.user_data.get("tolov_debt", 0)
+    uid = str(upd.effective_user.id)
+    await _save_tolov(ctx, uid, store, store_id, debt)
+    await q.edit_message_text(
+        f"✅ <b>To'lov qabul qilindi!</b>\n"
+        f"🏪 {store.get('Nomi','')}\n"
+        f"💰 Summa: {debt:,.0f} so'm\n"
+        f"✅ Qarz to'liq yopildi!",
+        reply_markup=back_ik("m:tolov"), parse_mode="HTML")
+    return ST_MAIN
+
+async def tolov_summa(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Qisman to'lov summasi kiritildi"""
+    la_ = la(ctx); uid = str(upd.effective_user.id)
+    summa = parse_money(upd.message.text)
+    if summa <= 0:
+        await upd.message.reply_text("❌ Noto'g'ri summa. Qaytadan kiriting:")
+        return ST_TOLOV_SUMMA
+    store = ctx.user_data.get("tolov_store", {})
+    store_id = ctx.user_data.get("tolov_store_id", "")
+    debt = ctx.user_data.get("tolov_debt", 0)
+    if summa > debt:
+        await upd.message.reply_text(
+            f"⚠️ Kiritilgan summa ({summa:,.0f}) qarzdan ({debt:,.0f}) ko'p!\n"
+            f"Qaytadan kiriting:")
+        return ST_TOLOV_SUMMA
+    await _save_tolov(ctx, uid, store, store_id, summa)
+    qoldi = max(0.0, debt - summa)
+    msg = (f"✅ <b>To'lov qabul qilindi!</b>\n"
+           f"🏪 {store.get('Nomi','')}\n"
+           f"💰 Summa: {summa:,.0f} so'm\n")
+    if qoldi > 0:
+        msg += f"💸 Qolgan qarz: {qoldi:,.0f} so'm"
+    else:
+        msg += "✅ Qarz to'liq yopildi!"
+    await upd.message.reply_text(msg, reply_markup=main_kb(upd.effective_user.id, la_), parse_mode="HTML")
+    return ST_MAIN
+
+async def _save_tolov(ctx, uid, store, store_id, summa):
+    """To'lovni Sheets ga saqlash"""
+    store_name = store.get("Nomi","")
+    tolov_id = make_id("TOL")
+    db_append("Tolov", [now_str(), uid, store_name, store_id, summa, "tasdiqlangan", tolov_id])
+    logger.info(f"To'lov saqlandi: {store_name} | {summa:,.0f} | {tolov_id}")
+
 
 async def vok_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     m=re.search(r'/vok_(\w+)',upd.message.text or "")
@@ -2018,7 +2106,8 @@ def main():
                 CallbackQueryHandler(admin_cb,        pattern="^adm:"),
                 CallbackQueryHandler(adm_narx_prod_cb,pattern="^adm_narx:"),
                 CallbackQueryHandler(adm_prod_unit_cb,pattern="^unit:"),
-                CallbackQueryHandler(hisobot_cb,      pattern="^his:"),
+                CallbackQueryHandler(tolov_store_cb,  pattern="^tolov_s:"),
+                CallbackQueryHandler(tolov_full_cb,   pattern="^tolov_full:"),
                 MessageHandler(txt, lambda u,c: ST_MAIN),
             ],
             ST_ZAVOD_QTY:         [MessageHandler(txt, zavod_qty)],
@@ -2067,6 +2156,11 @@ def main():
             ST_ADM_DIST_NAME:    [MessageHandler(txt, adm_dist_name)],
             ST_ADM_DIST_TG:      [MessageHandler(txt, adm_dist_tg)],
             ST_ADM_BROADCAST:    [MessageHandler(txt, adm_broadcast)],
+            ST_TOLOV_SUMMA: [
+                MessageHandler(txt, tolov_summa),
+                CallbackQueryHandler(tolov_full_cb, pattern="^tolov_full:"),
+                CallbackQueryHandler(tolov_show,    pattern="^m:tolov$"),
+            ],
             ST_ZAKAZ_EDIT_QTY:   [MessageHandler(txt, lambda u,c: ST_MAIN)],
         },
         fallbacks=[CommandHandler("start", start), CommandHandler("cancel", start)],
