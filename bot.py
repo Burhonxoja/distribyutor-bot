@@ -45,7 +45,7 @@ CHANNEL_ID        = os.environ.get("CHANNEL_ID", "")  # Do'kon ma'lumotlari kana
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
     ST_TOLOV_SUMMA,
-) = range(41)
+) = range(42)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
