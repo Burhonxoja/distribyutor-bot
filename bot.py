@@ -21,6 +21,7 @@ BOT_TOKEN         = os.environ.get("BOT_TOKEN", "")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")
 SPREADSHEET_ID    = os.environ.get("SPREADSHEET_ID", "")
 ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") if x.strip()]
+CHANNEL_ID        = os.environ.get("CHANNEL_ID", "")  # Do'kon ma'lumotlari kanalining ID
 
 # ── STATES ────────────────────────────────────────────────────────────────────
 (
@@ -44,7 +45,7 @@ ADMIN_IDS         = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") 
     ST_ADM_DIST_NAME, ST_ADM_DIST_TG,
     ST_ADM_BROADCAST,
     ST_TOLOV_SUMMA,
-) = range(42)
+) = range(41)
 
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
@@ -105,7 +106,7 @@ def fmt_qty(qty, unit, prod_name="", topshirish=False):
 SHEET_HEADERS = {
     "Foydalanuvchilar": ["TG_ID","Ism","Familiya","Telefon","Rol","Til","Passport","Status","Short_ID","Sana"],
     "Mahsulotlar":      ["ID","Nomi_UZ","Nomi_RU","Birlik","Faol","Sana"],
-    "Dokonlar":         ["ID","Nomi","Adres","MCHJ","Tel1","Tel2","Ega_Ismi","Dist_ID","Dist_Ism","Sana"],
+    "Dokonlar":         ["ID","Nomi","Adres","MCHJ","Tel1","Tel2","Ega_Ismi","Dist_ID","Dist_Ism","Channel_Msg_ID","Sana"],
     "Narxlar":          ["Mahsulot_ID","Mahsulot","Narx","Tannarx","Dist_ID","Dokon_ID","Sana"],
     "Qabul":            ["Sana","Dist_ID","Dist_Ism","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Qabul_ID"],
     "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID"],
@@ -1421,7 +1422,23 @@ async def dokonlar_show(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [(f"📋 Zakaz qo'shish","dzak:"+did)],
             [(f"✏️ Ma'lumot o'zgartirish","dedit:"+did)]
         )
-        await ctx.bot.send_message(upd.effective_user.id, card, reply_markup=kb, parse_mode="HTML")
+        # Kanal xabarini forward qilish
+        ch_msg_id = str(s.get("Channel_Msg_ID","")).strip()
+        if CHANNEL_ID and ch_msg_id and ch_msg_id != "0":
+            try:
+                await ctx.bot.forward_message(
+                    chat_id=upd.effective_user.id,
+                    from_chat_id=int(CHANNEL_ID),
+                    message_id=int(ch_msg_id))
+            except Exception as e:
+                logger.error(f"Forward xato: {e}")
+                await ctx.bot.send_message(upd.effective_user.id, card, reply_markup=kb, parse_mode="HTML")
+        else:
+            await ctx.bot.send_message(upd.effective_user.id, card, reply_markup=kb, parse_mode="HTML")
+        # Tugmalarni alohida yuborish (forward dan keyin)
+        if CHANNEL_ID and ch_msg_id and ch_msg_id != "0":
+            await ctx.bot.send_message(upd.effective_user.id,
+                f"☝️ {s.get('Nomi','')} uchun:", reply_markup=kb)
     await ctx.bot.send_message(upd.effective_user.id, "Yangi do'kon qo'shish:",
         reply_markup=ikr([("➕ Yangi do'kon","dokon:add")],[("🔙 Asosiy menyu","m:main")]))
     return ST_MAIN
@@ -1494,10 +1511,21 @@ async def di_photo(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tel2=ctx.user_data.get("di_tel2",""); ega=ctx.user_data.get("di_ega","")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     cnt=len(db_all("Dokonlar"))+1
-    db_append("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,now_str()])
     card=(f"🏪 <b>{name}</b>\n━━━━━━━━━━━━━━━━\n"
           f"📍 {addr}\n🏢 {mchj or '—'}\n"
           f"📞 {tel1}\n📞 {tel2 or '—'}\n👤 {ega or '—'}\n🚚 {dn}")
+    # Kanalga yuborish va msg_id saqlash
+    channel_msg_id = ""
+    if CHANNEL_ID:
+        try:
+            ch_msg = await ctx.bot.send_photo(
+                int(CHANNEL_ID), photo_id,
+                caption=f"🏪 DO'KON MA'LUMOTLARI\n\n{card}",
+                parse_mode="HTML")
+            channel_msg_id = str(ch_msg.message_id)
+        except Exception as e:
+            logger.error(f"Kanal xato: {e}")
+    db_append("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,channel_msg_id,now_str()])
     for adm in ADMIN_IDS:
         try:
             await ctx.bot.send_photo(adm,photo_id,caption=card,parse_mode="HTML")
