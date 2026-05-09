@@ -943,95 +943,98 @@ async def di_photo(upd,ctx):
     if not upd.message.photo:
         await upd.message.reply_text("❗ Rasm yuboring!"); return S_DI_PHOTO
     ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
-    await upd.message.reply_text("📍 Lokatsiyani yuboring:",reply_markup=loc_kb()); return S_DI_LOC
-
-async def di_loc(upd,ctx):
-    uid=upd.effective_user.id; lat=""; lng=""
+    awaitasync def di_loc(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = upd.effective_user.id
+    lat = lng = ""
+    
     if upd.message.location:
-        lat=str(upd.message.location.latitude); lng=str(upd.message.location.longitude)
-    elif upd.message.text and ("tkazib" in upd.message.text or "Пропустить" in upd.message.text):
-        pass  # lokatsiyasiz davom
-    elif upd.message.text:
-        await upd.message.reply_text("📍 Lokatsiya yuboring yoki o'tkazib yuboring:",reply_markup=loc_kb()); return S_DI_LOC
+        lat = str(upd.message.location.latitude)
+        lng = str(upd.message.location.longitude)
+    elif upd.message.text and any(x in upd.message.text.lower() for x in ["tkazib", "пропустить", "otkazib", "o'tkazib"]):
+        pass  # lokatsiyasiz davom etadi
+    else:
+        await upd.message.reply_text("📍 Lokatsiyani yuboring yoki o'tkazib yuboring:", 
+                                    reply_markup=loc_kb())
+        return S_DI_LOC
 
-    name=ctx.user_data.get("dn",""); addr=ctx.user_data.get("da","")
-    mchj=ctx.user_data.get("dm",""); tel1=ctx.user_data.get("dt1","")
-    tel2=ctx.user_data.get("dt2",""); ega=ctx.user_data.get("de","")
-    photo=ctx.user_data.get("dphoto","")
-    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-    cnt=len(db_get("Dokonlar"))+1
+    # Ma'lumotlarni yig'ish
+    name = ctx.user_data.get("dn", "")
+    addr = ctx.user_data.get("da", "")
+    mchj = ctx.user_data.get("dm", "")
+    tel1 = ctx.user_data.get("dt1", "")
+    tel2 = ctx.user_data.get("dt2", "")
+    ega  = ctx.user_data.get("de", "")
+    photo = ctx.user_data.get("dphoto", "")
+
+    u = get_user(uid)
+    dn = f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
+
+    cnt = len(db_get("Dokonlar")) + 1
+    did = str(cnt)
+
+    # Kanal uchun card
     lat_txt = f"\n📍 {lat}, {lng}" if lat and lng else ""
-    card=(f"🏪 <b>{name}</b>\n━━━━━━━━━━━━━━━━\n"
-          f"📍 {addr}\n🏢 {mchj or '—'}\n📞 {tel1}\n📞 {tel2 or '—'}\n👤 {ega or '—'}\n🚚 {dn}{lat_txt}")
+    card = (f"🏪 <b>{name}</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📍 {addr}\n"
+            f"🏢 {mchj or '—'}\n"
+            f"📞 {tel1}\n"
+            f"📞 {tel2 or '—'}\n"
+            f"👤 {ega or '—'}\n"
+            f"🚚 {dn}{lat_txt}")
 
-    # Kanalga yuborish va message_id saqlash
-    ch_mid=""
-    channel_int = int(CHANNEL_ID) if CHANNEL_ID else 0
-    if channel_int and photo:
+    ch_mid = ""
+
+    # === KANALGA YUBORISH ===
+    if CHANNEL_ID:
+        channel_id = int(CHANNEL_ID)
         try:
-            msg = await ctx.bot.send_photo(channel_int, photo,
-                caption=f"🏪 DO'KON MA'LUMOTI\n\n{card}", parse_mode="HTML")
-            ch_mid = str(msg.message_id)
-            logger.info(f"Kanal: {name} | msg_id={ch_mid}")
+            if photo:
+                msg = await ctx.bot.send_photo(
+                    chat_id=channel_id,
+                    photo=photo,
+                    caption=f"🏪 YANGI DO'KON\n\n{card}",
+                    parse_mode="HTML"
+                )
+                ch_mid = str(msg.message_id)
+            else:
+                msg = await ctx.bot.send_message(
+                    chat_id=channel_id,
+                    text=card,
+                    parse_mode="HTML"
+                )
+                ch_mid = str(msg.message_id)
+            
+            logger.info(f"Kanalga yuborildi: {name} | msg_id={ch_mid}")
         except Exception as e:
-            logger.error(f"Kanal xato ({CHANNEL_ID}): {e}")
-    elif channel_int and not photo:
-        logger.warning(f"Kanal: rasm yo'q, {name}")
-    elif not channel_int:
-        logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
+            logger.error(f"Kanalga yuborishda xato: {e}")
 
-    db_add("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()])
+    # Bazaga saqlash
+    db_add("Dokonlar", [
+        did, name, addr, mchj, tel1, tel2, ega,
+        str(uid), dn, lat, lng, ch_mid, now_s()
+    ])
 
-    # Adminga
-    for adm in ADMIN_IDS:
-        try:
-            if photo: await ctx.bot.send_photo(adm,photo,caption=card,parse_mode="HTML")
-            else: await ctx.bot.send_message(adm,card,parse_mode="HTML")
-        except: pass
-
-    await upd.message.reply_text("...",reply_markup=ReplyKeyboardRemove())
+    # Foydalanuvchiga javob
+    await upd.message.reply_text("...", reply_markup=ReplyKeyboardRemove())
+    
     if photo:
-        await upd.message.reply_photo(photo,caption=f"✅ Do'kon qo'shildi!\n\n{card}",parse_mode="HTML")
+        await upd.message.reply_photo(photo, caption=f"✅ Do'kon qo'shildi!\n\n{card}", parse_mode="HTML")
     else:
-        await upd.message.reply_text(f"✅ Do'kon qo'shildi!\n\n{card}",parse_mode="HTML")
+        await upd.message.reply_text(f"✅ Do'kon qo'shildi!\n\n{card}", parse_mode="HTML")
+
+    # Lokatsiyani ham yuborish
     if lat and lng:
-        await ctx.bot.send_location(uid,float(lat),float(lng))
-    for k in ["dn","da","dm","dt1","dt2","de","dphoto"]: ctx.user_data.pop(k,None)
-    await send_main(upd,ctx); return S_MAIN
+        try:
+            await ctx.bot.send_location(uid, float(lat), float(lng))
+        except:
+            pass
 
-# Do'kon zakaz qo'shish
-async def dok_zak_cb(upd,ctx):
-    q=upd.callback_query; await ans(q); l=la(ctx); uid=str(upd.effective_user.id)
-    sid=q.data.split(":")[1]
-    s=next((x for x in get_stores(uid) if str(x.get("ID",""))==sid),None)
-    if not s: return S_MAIN
-    ctx.user_data["zak_s"]=s; prods=get_prods()
-    await q.edit_message_text(f"📋 {s.get('Nomi','')} — zakaz\nMahsulot:",reply_markup=prod_kb(prods,l,"zprod","m:dok")); return S_MAIN
+    # Tozalash
+    for k in ["dn","da","dm","dt1","dt2","de","dphoto"]:
+        ctx.user_data.pop(k, None)
 
-async def zprod_cb(upd,ctx):
-    q=upd.callback_query; await ans(q); l=la(ctx)
-    pid=int(q.data.split(":")[1]); p=next((x for x in get_prods() if x["id"]==pid),None)
-    if not p: return S_MAIN
-    ctx.user_data["zak_p"]=p; brinza=is_brinza(p[l])
-    await q.edit_message_text(f"📦 <b>{p[l]}</b>\n{'Nechta? (dona)' if brinza else 'Miqdor:'}",parse_mode="HTML"); return S_ZAK_FROM_QTY
-
-async def zak_from_qty(upd,ctx):
-    l=la(ctx); uid=str(upd.effective_user.id)
-    p=ctx.user_data.get("zak_p",{}); s=ctx.user_data.get("zak_s",{})
-    pn=p.get(l,""); brinza=is_brinza(pn)
-    if brinza:
-        try: qty=int(float(upd.message.text.strip().replace(",",".")))
-        except: qty=0
-        if qty<=0: await upd.message.reply_text("Butun son:"); return S_ZAK_FROM_QTY
-        bir="dona"
-    else:
-        qty=parse_w(upd.message.text)
-        if qty<=0: await upd.message.reply_text("❌:"); return S_ZAK_FROM_QTY
-        bir=p.get("unit","kg")
-    sid=str(s.get("ID","")); sname=s.get("Nomi","")
-    dist_id=str(s.get("Dist_ID","")) or uid
-    db_add("Buyurtmalar",[now_s(),sid,sname,dist_id,pn,qty,"Yangi",mk_id("Z")])
-    await upd.message.reply_text(f"✅ Zakaz: {sname}\n{pn}: {fmtq(qty,bir,pn,bir=='kg')}",reply_markup=main_kb(uid))
+    await send_main(upd, ctx)
     return S_MAIN
 
 # Do'kon tahrirlash
