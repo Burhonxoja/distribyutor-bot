@@ -949,7 +949,8 @@ async def di_loc(upd,ctx):
     uid=upd.effective_user.id; lat=""; lng=""
     if upd.message.location:
         lat=str(upd.message.location.latitude); lng=str(upd.message.location.longitude)
-    elif upd.message.text and "tkazib" in upd.message.text: pass  # skip
+    elif upd.message.text and ("tkazib" in upd.message.text or "Пропустить" in upd.message.text):
+        pass  # lokatsiyasiz davom
     elif upd.message.text:
         await upd.message.reply_text("📍 Lokatsiya yuboring yoki o'tkazib yuboring:",reply_markup=loc_kb()); return S_DI_LOC
 
@@ -959,26 +960,40 @@ async def di_loc(upd,ctx):
     photo=ctx.user_data.get("dphoto","")
     u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
     cnt=len(db_get("Dokonlar"))+1
+    lat_txt = f"\n📍 {lat}, {lng}" if lat and lng else ""
     card=(f"🏪 <b>{name}</b>\n━━━━━━━━━━━━━━━━\n"
-          f"📍 {addr}\n🏢 {mchj or '—'}\n📞 {tel1}\n📞 {tel2 or '—'}\n👤 {ega or '—'}\n🚚 {dn}")
+          f"📍 {addr}\n🏢 {mchj or '—'}\n📞 {tel1}\n📞 {tel2 or '—'}\n👤 {ega or '—'}\n🚚 {dn}{lat_txt}")
 
-    # Kanalga yuborish
+    # Kanalga yuborish va message_id saqlash
     ch_mid=""
-    if CHANNEL_ID:
+    channel_int = int(CHANNEL_ID) if CHANNEL_ID else 0
+    if channel_int and photo:
         try:
-            msg=await ctx.bot.send_photo(int(CHANNEL_ID),photo,caption=f"🏪 DO'KON\n\n{card}",parse_mode="HTML")
-            ch_mid=str(msg.message_id)
-        except Exception as e: logger.error(f"Channel: {e}")
+            msg = await ctx.bot.send_photo(channel_int, photo,
+                caption=f"🏪 DO'KON MA'LUMOTI\n\n{card}", parse_mode="HTML")
+            ch_mid = str(msg.message_id)
+            logger.info(f"Kanal: {name} | msg_id={ch_mid}")
+        except Exception as e:
+            logger.error(f"Kanal xato ({CHANNEL_ID}): {e}")
+    elif channel_int and not photo:
+        logger.warning(f"Kanal: rasm yo'q, {name}")
+    elif not channel_int:
+        logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
 
     db_add("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()])
 
     # Adminga
     for adm in ADMIN_IDS:
-        try: await ctx.bot.send_photo(adm,photo,caption=card,parse_mode="HTML")
+        try:
+            if photo: await ctx.bot.send_photo(adm,photo,caption=card,parse_mode="HTML")
+            else: await ctx.bot.send_message(adm,card,parse_mode="HTML")
         except: pass
 
     await upd.message.reply_text("...",reply_markup=ReplyKeyboardRemove())
-    await upd.message.reply_photo(photo,caption=f"✅ Do'kon qo'shildi!\n\n{card}",parse_mode="HTML")
+    if photo:
+        await upd.message.reply_photo(photo,caption=f"✅ Do'kon qo'shildi!\n\n{card}",parse_mode="HTML")
+    else:
+        await upd.message.reply_text(f"✅ Do'kon qo'shildi!\n\n{card}",parse_mode="HTML")
     if lat and lng:
         await ctx.bot.send_location(uid,float(lat),float(lng))
     for k in ["dn","da","dm","dt1","dt2","de","dphoto"]: ctx.user_data.pop(k,None)
@@ -1326,6 +1341,14 @@ def main():
     app.job_queue.run_daily(job_zakaz, time=dtime(20,0))
     app.job_queue.run_daily(job_5kun,  time=dtime(10,0))
     app.job_queue.run_repeating(job_24h, interval=3600, first=60)
+
+    # /start komandani Telegram da ko'rsatish (klaviaturada / bossalar chiqadi)
+    async def post_init(application):
+        from telegram import BotCommand
+        await application.bot.set_my_commands([
+            BotCommand("start", "Botni ishga tushirish / Главное меню"),
+        ])
+    app.post_init = post_init
 
     txt=filters.TEXT&~filters.COMMAND
     ptxt=(filters.PHOTO|filters.TEXT)&~filters.COMMAND
