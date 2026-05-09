@@ -33,7 +33,7 @@ CHANNEL_ID  = os.environ.get("CHANNEL_ID", "")
  S_ADM_NARX_VAL, S_ADM_NARX_COST,
  S_ADM_DK_NAME, S_ADM_DK_ADDR, S_ADM_DK_DIST,
  S_ADM_DIST_NAME, S_ADM_DIST_TG,
- S_ADM_BC, S_TOLOV_SUMMA) = range(42)
+ S_ADM_BC, S_TOLOV_SUMMA) = range(41)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 HEADERS = {
