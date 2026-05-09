@@ -341,8 +341,12 @@ def store_kb(stores, pfx, back_cb="m:main"):
     return InlineKeyboardMarkup([[InlineKeyboardButton(b[0],callback_data=b[1]) for b in r] for r in rows])
 
 def phone_kb(): return ReplyKeyboardMarkup([[KeyboardButton("📱 Telefon yuborish",request_contact=True)]],resize_keyboard=True)
-def loc_kb():   return ReplyKeyboardMarkup([[KeyboardButton("📍 Lokatsiya yuborish",request_location=True)],["⏭ O'tkazib yuborish"]],resize_keyboard=True)
-
+def loc_kb():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("📍 Lokatsiya yuborish", request_location=True)],
+        ["⏭ O'tkazib yuborish"]
+    ], resize_keyboard=True)
+  
 async def send_main(upd_or_uid, ctx, edit=False):
     uid=upd_or_uid.effective_user.id if hasattr(upd_or_uid,'effective_user') else upd_or_uid
     sid=get_sid(uid); l=ctx.user_data.get("lang","uz")
