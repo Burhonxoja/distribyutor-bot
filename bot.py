@@ -893,7 +893,7 @@ async def dok_show(upd,ctx):
         ch_mid=str(s.get("Channel_Msg_ID","")).strip()
         if CHANNEL_ID and ch_mid and ch_mid not in ("","0"):
             try:
-                await ctx.bot.forward_message(chat_id=uid,from_chat_id=int(CHANNEL_ID),message_id=int(ch_mid))
+                await ctx.bot.forward_message(chat_id=uid,from_chat_id=int(CHANNEL_ID.strip()),message_id=int(ch_mid))
                 await ctx.bot.send_message(uid,f"☝️ {s.get('Nomi','')}:",reply_markup=kb)
             except Exception as e:
                 logger.error(f"Forward: {e}")
@@ -983,17 +983,22 @@ async def di_loc(upd,ctx):
 
     # Kanalga yuborish va message_id saqlash
     ch_mid=""
-    channel_int = int(CHANNEL_ID) if CHANNEL_ID else 0
+    channel_int = 0
+    if CHANNEL_ID:
+        try:
+            channel_int = int(CHANNEL_ID.strip())
+        except ValueError:
+            logger.error(f"CHANNEL_ID noto'g'ri format: {CHANNEL_ID!r}")
     if channel_int and photo:
         try:
             msg = await ctx.bot.send_photo(channel_int, photo,
                 caption=f"🏪 DO'KON MA'LUMOTI\n\n{card}", parse_mode="HTML")
             ch_mid = str(msg.message_id)
-            logger.info(f"Kanal: {name} | msg_id={ch_mid}")
+            logger.info(f"✅ Kanal: {name} | msg_id={ch_mid}")
         except Exception as e:
-            logger.error(f"Kanal xato ({CHANNEL_ID}): {e}")
+            logger.error(f"❌ Kanal xato ({CHANNEL_ID}): {type(e).__name__}: {e}")
     elif channel_int and not photo:
-        logger.warning(f"Kanal: rasm yo'q, {name}")
+        logger.warning(f"Kanal: rasm yo'q, {name} uchun xabar yuborilmadi")
     elif not channel_int:
         logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
 
@@ -1369,6 +1374,20 @@ def main():
             logger.info("Commands set OK")
         except Exception as e:
             logger.error(f"set_my_commands: {e}")
+
+        # Kanal ulanishini tekshirish
+        if CHANNEL_ID:
+            try:
+                channel_int = int(CHANNEL_ID.strip())
+                chat = await application.bot.get_chat(channel_int)
+                logger.info(f"✅ Kanal topildi: {chat.title} (id={channel_int})")
+                msg = await application.bot.send_message(channel_int, "✅ Bot ulandi!")
+                logger.info(f"✅ Test xabar yuborildi: msg_id={msg.message_id}")
+                await application.bot.delete_message(channel_int, msg.message_id)
+            except Exception as e:
+                logger.error(f"❌ Kanal xato ({CHANNEL_ID}): {type(e).__name__}: {e}")
+        else:
+            logger.warning("CHANNEL_ID o'rnatilmagan — kanal test o'tkazilmadi")
     app.post_init = post_init
 
     txt=filters.TEXT&~filters.COMMAND
