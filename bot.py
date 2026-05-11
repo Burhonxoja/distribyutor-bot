@@ -1013,6 +1013,8 @@ async def di_loc(upd,ctx):
                 caption=f"🏪 DO'KON MA'LUMOTI\n\n{card}", parse_mode="HTML")
             ch_mid = str(msg.message_id)
             logger.info(f"✅ Kanal: {name} | msg_id={ch_mid}")
+            if lat and lng:
+                await ctx.bot.send_location(channel_int, float(lat), float(lng))
         except Exception as e:
             logger.error(f"❌ Kanal xato ({CHANNEL_ID}): {type(e).__name__}: {e}")
     elif channel_int and not photo:
@@ -1020,7 +1022,20 @@ async def di_loc(upd,ctx):
     elif not channel_int:
         logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
 
-    db_add("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()])
+    try:
+        row = [str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()]
+        print(f"[DEBUG] db_add Dokonlar row({len(row)}): {row}", flush=True)
+        w = ws("Dokonlar")
+        if w:
+            headers = w.row_values(1)
+            print(f"[DEBUG] Dokonlar headers({len(headers)}): {headers}", flush=True)
+            w.append_row([str(x) for x in row])
+            print("[DEBUG] Dokonlar append_row OK", flush=True)
+        else:
+            print("[DEBUG] ws('Dokonlar') returned None!", flush=True)
+    except Exception as e:
+        print(f"[ERROR] Dokonlar save FAILED: {type(e).__name__}: {e}", flush=True)
+        logger.error(f"Dokonlar save: {e}")
 
     # Adminga
     for adm in ADMIN_IDS:
