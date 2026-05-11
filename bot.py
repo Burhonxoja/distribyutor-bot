@@ -417,15 +417,18 @@ async def reg_phone(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         await upd.message.reply_text("❌ Noto'g'ri!",reply_markup=phone_kb()); return S_REG_PHONE
     ctx.user_data["rph"]=phone
     await upd.message.reply_text("...",reply_markup=ReplyKeyboardRemove())
-    await upd.message.reply_text("🪪 Passport seriya raqami (masalan: AA1234567)\nYoki o'tkazib yuborish:",
-        reply_markup=ik1(("⏭ O'tkazib yuborish","skip_pass"))); return S_REG_PASS
+    await upd.message.reply_text("📸 Passport yoki shaxsiy guvohnoma RASMINI yuboring (MAJBURIY):"); return S_REG_PASS
 
 async def reg_pass(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id; l=la(ctx)
-    if upd.callback_query: await ans(upd.callback_query); passport="otkazildi"; photo=None
-    else:
-        passport="rasm_bor" if upd.message.photo else (upd.message.text or "otkazildi")
-        photo=upd.message.photo[-1].file_id if upd.message.photo else None
+    if upd.callback_query:
+        await ans(upd.callback_query)
+        await ctx.bot.send_message(uid,"❌ Rasm yuboring, matn emas! 📸\nPassport yoki guvohnoma rasmini tanlang.")
+        return S_REG_PASS
+    if not upd.message.photo:
+        await upd.message.reply_text("❌ Iltimos rasm yuboring, matn emas! 📸\nPassport yoki guvohnoma rasmini tanlang.")
+        return S_REG_PASS
+    passport="rasm_bor"; photo=upd.message.photo[-1].file_id
     name=ctx.user_data.get("rn",""); fname=ctx.user_data.get("rf",""); phone=ctx.user_data.get("rph","")
     sid=mk_sid(); full=f"{name} {fname}".strip()
     db_del("Foydalanuvchilar","TG_ID",str(uid))
@@ -892,7 +895,10 @@ async def his_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
 # ── DO'KONLAR (lokatsiya bilan) ────────────────────────────────────────────────
 async def dok_show(upd,ctx):
-    uid=str(upd.effective_user.id); stores=get_stores(uid)
+    uid=str(upd.effective_user.id)
+    all_stores=db_get("Dokonlar")
+    print(f"[DEBUG] dok_show uid={uid}, total={len(all_stores)}, dist_ids={[x.get('Dist_ID','') for x in all_stores[:5]]}", flush=True)
+    stores=get_stores(uid)
     if upd.callback_query:
         try: await upd.callback_query.edit_message_text("🏪 <b>Do'konlarim</b>",parse_mode="HTML")
         except: pass
@@ -918,6 +924,10 @@ async def dok_show(upd,ctx):
                 await ctx.bot.send_message(uid,card,reply_markup=kb,parse_mode="HTML")
         else:
             await ctx.bot.send_message(uid,card,reply_markup=kb,parse_mode="HTML")
+        lat_v=s.get("Lat",""); lng_v=s.get("Lng","")
+        if lat_v and lng_v:
+            try: await ctx.bot.send_location(int(uid),float(lat_v),float(lng_v))
+            except: pass
     await ctx.bot.send_message(uid,"Yangi do'kon:",reply_markup=ik1(("➕ Qo'shish","dok:add"),("🔙 Orqaga","m:main")))
     return S_MAIN
 
@@ -1029,6 +1039,9 @@ async def di_loc(upd,ctx):
         if w:
             headers = w.row_values(1)
             print(f"[DEBUG] Dokonlar headers({len(headers)}): {headers}", flush=True)
+            if not headers or headers[0] != "ID":
+                w.insert_row(HEADERS["Dokonlar"], 1)
+                print("[DEBUG] Dokonlar headers initialized", flush=True)
             w.append_row([str(x) for x in row])
             print("[DEBUG] Dokonlar append_row OK", flush=True)
         else:
@@ -1246,7 +1259,7 @@ async def savat_show(upd,ctx):
     lines+=["","🏪 <b>Do'konlar:</b>"]
     for dk,items in by_store.items(): lines.append(f"• {dk}: {', '.join(items)}")
     await esend(upd,ctx,"\n".join(lines),
-        ikr([("🚀 Zavodga yuborish","savat:send")],[("🔙 Orqaga","m:main")])); return S_MAIN
+        ikr([("📅 Sana tanlash","savat:send")],[("🔙 Orqaga","m:main")])); return S_MAIN
 
 async def savat_send_cb(upd,ctx):
     q=upd.callback_query; await ans(q)
@@ -1286,15 +1299,25 @@ async def _savat_finish(upd,ctx,sana):
     for pn,d in by_prod.items(): lines.append(f"• {pn}: {fmtq(d['qty'],d['unit'],pn,False)}")
     lines+=[f"━━━━━━━━━━━━━━━━",f"🚚 Dist: {dn} (ID: {sid})"]
     msg="\n".join(lines)
-    db_add("Savat",[now_s(),uid,",".join(zakaz_ids),sana,"yuborildi",mk_id("SAV")])
+    ctx.user_data["savat_sana"]=sana; ctx.user_data["savat_msg"]=msg; ctx.user_data["savat_zids"]=",".join(zakaz_ids)
+    preview=msg+"\n\n❓ Zakazni zavodga yuborasizmi?"
+    kb=ikr([("🚀 Zavodga yuborish","savat:confirm")],[("🔙 Orqaga","m:savat")])
+    if upd.callback_query:
+        try: await upd.callback_query.edit_message_text(preview,reply_markup=kb,parse_mode="HTML")
+        except: await ctx.bot.send_message(uid,preview,reply_markup=kb,parse_mode="HTML")
+    else:
+        await upd.message.reply_text(preview,reply_markup=kb,parse_mode="HTML")
+
+async def savat_confirm_cb(upd,ctx):
+    q=upd.callback_query; await ans(q); uid=str(upd.effective_user.id)
+    sana=ctx.user_data.get("savat_sana","?"); msg=ctx.user_data.get("savat_msg","")
+    zids=ctx.user_data.get("savat_zids","")
+    db_add("Savat",[now_s(),uid,zids,sana,"yuborildi",mk_id("SAV")])
     for adm in ADMIN_IDS:
         try: await ctx.bot.send_message(adm,msg,parse_mode="HTML")
         except: pass
-    if upd.callback_query:
-        try: await upd.callback_query.edit_message_text("✅ Zavod zakazingiz yuborildi!",parse_mode="HTML")
-        except: pass
-    else:
-        await upd.message.reply_text("✅ Zavod zakazingiz yuborildi!")
+    try: await q.edit_message_text("✅ Zavod zakazingiz yuborildi!",parse_mode="HTML")
+    except: pass
     await send_main(upd,ctx)
 
 
@@ -1624,6 +1647,7 @@ def main():
                 CallbackQueryHandler(adm_narx_p_cb,pattern="^adm_narx:"),
                 CallbackQueryHandler(adm_unit_cb,  pattern="^unit:"),
                 CallbackQueryHandler(savat_send_cb,pattern="^savat:send$"),
+                CallbackQueryHandler(savat_confirm_cb,pattern="^savat:confirm$"),
                 MessageHandler(txt,lambda u,c: S_MAIN),
             ],
             S_ZAV_QTY:      [MessageHandler(txt,zav_qty)],
