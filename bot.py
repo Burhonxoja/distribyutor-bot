@@ -1594,6 +1594,20 @@ def main():
         except Exception as e:
             logger.error(f"set_my_commands: {e}")
 
+        # Barcha kerakli sheet tablarni yaratish (yo'q bo'lsa)
+        try:
+            for tab_name in HEADERS:
+                w = ws(tab_name)
+                if w:
+                    row1 = w.row_values(1)
+                    if not row1:
+                        w.append_row(HEADERS[tab_name])
+                        logger.info(f"✅ Sheet headers qoshildi: {tab_name}")
+                    else:
+                        logger.info(f"✅ Sheet mavjud: {tab_name} ({len(row1)} ustun)")
+        except Exception as e:
+            logger.error(f"Sheet init xato: {e}")
+
         # Kanal ulanishini tekshirish
         if CHANNEL_ID:
             try:
