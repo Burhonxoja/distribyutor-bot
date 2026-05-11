@@ -322,7 +322,7 @@ def back(cb="m:main"): return ik1(("🔙 Orqaga",cb))
 def main_kb(uid, l="uz"):
     if l == "kir":
         rows=[
-            [("📥 Завод","m:zav"),("📋 Буюртмалар","m:buy")],
+            [("📥 Заводдан қабул","m:zav"),("📋 Буюртмалар","m:buy")],
             [("🚚 Товар топшириш","m:top"),("💵 Тўлов","m:tol")],
             [("📊 Кунлик","m:nat"),("📦 Омбор","m:omb")],
             [("🛒 Сават","m:savat"),("📈 Ҳисобот","m:his")],
@@ -330,7 +330,7 @@ def main_kb(uid, l="uz"):
         ]
     else:
         rows=[
-            [("📥 Zavod","m:zav"),("📋 Buyurtmalar","m:buy")],
+            [("📥 Zavoddan qabul","m:zav"),("📋 Buyurtmalar","m:buy")],
             [("🚚 Tovar topshirish","m:top"),("💵 To'lov","m:tol")],
             [("📊 Kunlik","m:nat"),("📦 Ombor","m:omb")],
             [("🛒 Savat","m:savat"),("📈 Hisobot","m:his")],
