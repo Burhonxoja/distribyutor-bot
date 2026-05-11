@@ -47,7 +47,7 @@ HEADERS = {
     "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID","Eslatma_Kun","Eslatma_Sana","Izoh"],
     "Savat":            ["Sana","Dist_ID","Zakaz_IDs","Kerak_Sana","Status","Savat_ID"],
     "Tolov":            ["Sana","Dist_ID","Dokon","Dokon_ID","Summa","Status","Tolov_ID"],
-    "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Status","Zakaz_ID"],
+    "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Birlik","Status","Zakaz_ID"],
     "Vozvrat":          ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Voz_ID"],
     "Sozlamalar":       ["Kalit","Qiymat","Sana"],
 }
@@ -1085,7 +1085,7 @@ async def zak_from_qty(upd,ctx):
         bir=p.get("unit","kg")
     sid=str(s.get("ID","")); sname=s.get("Nomi","")
     dist_id=str(s.get("Dist_ID","")) or uid
-    db_add("Buyurtmalar",[now_s(),sid,sname,dist_id,pn,qty,"Yangi",mk_id("Z")])
+    db_add("Buyurtmalar",[now_s(),sid,sname,dist_id,pn,qty,bir,"Yangi",mk_id("Z")])
     await upd.message.reply_text(f"✅ Zakaz: {sname}\n{pn}: {fmtq(qty,bir,pn,bir=='kg')}",reply_markup=main_kb(uid))
     return S_MAIN
 
