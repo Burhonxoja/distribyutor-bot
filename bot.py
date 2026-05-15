@@ -24,8 +24,8 @@ SHEET_ID    = os.environ.get("SPREADSHEET_ID", "")
 ADMIN_IDS   = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") if x.strip()]
 CHANNEL_ID        = os.environ.get("CHANNEL_ID", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-REDIS_URL         = os.environ.get("REDIS_URL", "")      # upstash: rediss://...
-REDIS_PASSWORD    = os.environ.get("REDIS_PASSWORD", "")
+UPSTASH_URL   = os.environ.get("UPSTASH_REDIS_REST_URL", "")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 
 # ── STATES ────────────────────────────────────────────────────────────────────
 (S_LANG, S_REG_NAME, S_REG_FNAME, S_REG_PHONE, S_REG_PASS,
@@ -182,34 +182,28 @@ today_s= lambda: datetime.now().strftime("%Y-%m-%d")
 mk_id  = lambda p="": p+datetime.now().strftime("%m%d%H%M%S")+str(random.randint(10,99))
 mk_sid = lambda: str(random.randint(100000,999999))
 
-# ── REDIS CACHE ───────────────────────────────────────────────────────────────
-_redis = None
+# ── REDIS CACHE (Upstash REST) ────────────────────────────────────────────────
 CACHE_TTL = 300  # 5 minutes
+_upstash = None
 
-def _get_redis():
-    global _redis
-    if _redis is not None:
-        return _redis
-    if not REDIS_URL:
+def _get_upstash():
+    global _upstash
+    if _upstash is not None:
+        return _upstash
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
         return None
     try:
-        import redis as redis_lib
-        _redis = redis_lib.from_url(
-            REDIS_URL,
-            password=REDIS_PASSWORD or None,
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-        )
-        _redis.ping()
-        logger.info("✅ Redis ulandi")
+        from upstash_redis import Redis
+        _upstash = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN)
+        _upstash.ping()
+        logger.info("✅ Upstash Redis ulandi")
     except Exception as e:
-        logger.warning(f"Redis ulanmadi (cache o'chirildi): {e}")
-        _redis = None
-    return _redis
+        logger.warning(f"Upstash ulanmadi (cache o'chirildi): {e}")
+        _upstash = None
+    return _upstash
 
 def cache_get(key: str):
-    r = _get_redis()
+    r = _get_upstash()
     if not r:
         return None
     try:
@@ -220,7 +214,7 @@ def cache_get(key: str):
         return None
 
 def cache_set(key: str, value, ttl: int = CACHE_TTL):
-    r = _get_redis()
+    r = _get_upstash()
     if not r:
         return
     try:
@@ -229,7 +223,7 @@ def cache_set(key: str, value, ttl: int = CACHE_TTL):
         logger.warning(f"cache_set {key}: {e}")
 
 def cache_del(*keys: str):
-    r = _get_redis()
+    r = _get_upstash()
     if not r:
         return
     try:
