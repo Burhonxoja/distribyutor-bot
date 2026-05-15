@@ -1479,35 +1479,60 @@ async def dok_add_cb(upd,ctx):
 
 async def di_name(upd,ctx):
     ctx.user_data["dn"]=upd.message.text.strip()
-    await upd.message.reply_text("📍 Manzil:"); return S_DI_ADDR
+    await upd.message.reply_text("📍 Manzilni kiriting:")
+    return S_DI_ADDR
 
 async def di_addr(upd,ctx):
     ctx.user_data["da"]=upd.message.text.strip()
-    await upd.message.reply_text("🏢 MCHJ (yoki o'tkazish):",reply_markup=ik1(("⏭","di_skip:mchj"))); return S_DI_MCHJ
+    await upd.message.reply_text(
+        "🏢 MCHJ nomini kiriting (ixtiyoriy):",
+        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:mchj")))
+    return S_DI_MCHJ
 
 async def di_mchj(upd,ctx):
-    if upd.callback_query: await ans(upd.callback_query); ctx.user_data["dm"]=""
-    else: ctx.user_data["dm"]=upd.message.text.strip()
-    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 1:",reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True))
+    if upd.callback_query:
+        await ans(upd.callback_query)
+        ctx.user_data["dm"]=""
+    else:
+        ctx.user_data["dm"]=upd.message.text.strip()
+    await ctx.bot.send_message(
+        upd.effective_user.id,
+        "📞 Tel 1 ni kiriting yoki kontaktni yuboring:",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("📱 Kontaktni yuborish",request_contact=True)]],
+            resize_keyboard=True, one_time_keyboard=True))
     return S_DI_TEL1
 
 async def di_tel1(upd,ctx):
-    phone=upd.message.contact.phone_number if upd.message.contact else clean_phone(upd.message.text)
+    if upd.message.contact:
+        phone = upd.message.contact.phone_number or ""
+    else:
+        phone = clean_phone(upd.message.text or "")
     if len(phone.replace("+",""))<7:
-        await upd.message.reply_text("❌ Noto'g'ri telefon raqam!",
-            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True))
+        await upd.message.reply_text(
+            "❌ Noto'g'ri raqam. Qaytadan kiriting yoki kontaktni yuboring:",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("📱 Kontaktni yuborish",request_contact=True)]],
+                resize_keyboard=True, one_time_keyboard=True))
         return S_DI_TEL1
     ctx.user_data["dt1"]=phone
-    await upd.message.reply_text("📞 Tel 2 (ixtiyoriy):",
-        reply_markup=ReplyKeyboardRemove())
-    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 2 yoki o'tkazib yuboring:",
+    await upd.message.reply_text("✅ Tel 1 saqlandi.",reply_markup=ReplyKeyboardRemove())
+    await ctx.bot.send_message(
+        upd.effective_user.id,
+        "📞 Tel 2 ni kiriting (ixtiyoriy):",
         reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:tel2")))
     return S_DI_TEL2
 
 async def di_tel2(upd,ctx):
-    if upd.callback_query: await ans(upd.callback_query); ctx.user_data["dt2"]=""
-    else: ctx.user_data["dt2"]=clean_phone(upd.message.text)
-    await ctx.bot.send_message(upd.effective_user.id,"👤 Do'kon egasi ismi:"); return S_DI_EGA
+    if upd.callback_query:
+        await ans(upd.callback_query)
+        ctx.user_data["dt2"]=""
+    elif upd.message.contact:
+        ctx.user_data["dt2"] = upd.message.contact.phone_number or ""
+    else:
+        ctx.user_data["dt2"] = clean_phone(upd.message.text or "")
+    await ctx.bot.send_message(upd.effective_user.id,"👤 Do'kon egasining ismi:")
+    return S_DI_EGA
 
 async def di_ega(upd,ctx):
     ctx.user_data["de"]=upd.message.text.strip()
@@ -1522,17 +1547,16 @@ async def di_photo(upd,ctx):
         ctx.user_data["dphoto"]=""
     elif upd.message and upd.message.photo:
         ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
-    elif upd.message and upd.message.text and upd.message.text.strip():
-        # User typed text instead of sending photo — remind them
+    else:
         await upd.message.reply_text(
             "📸 Rasm yuboring yoki o'tkazib yuboring:",
             reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:photo")))
         return S_DI_PHOTO
     await ctx.bot.send_message(
         upd.effective_user.id,
-        "📍 Lokatsiyani yuboring yoki o'tkazib yuboring:",
+        "📍 Lokatsiya yuboring (ixtiyoriy):",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("📍 Lokatsiya yuborish", request_location=True)],
+            [[KeyboardButton("📍 Lokatsiya yuborish",request_location=True)],
              ["⏭ O'tkazib yuborish"]],
             resize_keyboard=True, one_time_keyboard=True))
     return S_DI_LOC
