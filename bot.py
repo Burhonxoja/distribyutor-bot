@@ -22,8 +22,10 @@ BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
 CREDS_JSON  = os.environ.get("GOOGLE_CREDS_JSON", "")
 SHEET_ID    = os.environ.get("SPREADSHEET_ID", "")
 ADMIN_IDS   = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") if x.strip()]
-CHANNEL_ID       = os.environ.get("CHANNEL_ID", "")
+CHANNEL_ID        = os.environ.get("CHANNEL_ID", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+REDIS_URL         = os.environ.get("REDIS_URL", "")      # upstash: rediss://...
+REDIS_PASSWORD    = os.environ.get("REDIS_PASSWORD", "")
 
 # ── STATES ────────────────────────────────────────────────────────────────────
 (S_LANG, S_REG_NAME, S_REG_FNAME, S_REG_PHONE, S_REG_PASS,
@@ -145,6 +147,7 @@ def db_add(tab, row):
             return
         _ensure_headers(w, tab)
         w.append_row([str(x) for x in row])
+        cache_invalidate(tab)
         print(f"[DEBUG] db_add '{tab}' OK: {row}", flush=True)
     except Exception as e:
         print(f"[ERROR] db_add '{tab}' FAILED: {type(e).__name__}: {e}", flush=True)
@@ -158,7 +161,9 @@ def db_set(tab, sc, sv, uc, uv):
         if uc not in h: return
         for i,r in enumerate(w.get_all_records()):
             if str(r.get(sc,"")).strip()==str(sv).strip():
-                w.update_cell(i+2,h.index(uc)+1,str(uv)); return
+                w.update_cell(i+2,h.index(uc)+1,str(uv))
+                cache_invalidate(tab)
+                return
     except Exception as e: logger.error(f"db_set {tab}: {e}")
 
 def db_del(tab, sc, sv):
@@ -167,13 +172,84 @@ def db_del(tab, sc, sv):
         if not w: return
         for i,r in enumerate(w.get_all_records()):
             if str(r.get(sc,"")).strip()==str(sv).strip():
-                w.delete_rows(i+2); return
+                w.delete_rows(i+2)
+                cache_invalidate(tab)
+                return
     except Exception as e: logger.error(f"db_del {tab}: {e}")
 
 now_s  = lambda: datetime.now().strftime("%Y-%m-%d %H:%M")
 today_s= lambda: datetime.now().strftime("%Y-%m-%d")
 mk_id  = lambda p="": p+datetime.now().strftime("%m%d%H%M%S")+str(random.randint(10,99))
 mk_sid = lambda: str(random.randint(100000,999999))
+
+# ── REDIS CACHE ───────────────────────────────────────────────────────────────
+_redis = None
+CACHE_TTL = 300  # 5 minutes
+
+def _get_redis():
+    global _redis
+    if _redis is not None:
+        return _redis
+    if not REDIS_URL:
+        return None
+    try:
+        import redis as redis_lib
+        _redis = redis_lib.from_url(
+            REDIS_URL,
+            password=REDIS_PASSWORD or None,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
+        _redis.ping()
+        logger.info("✅ Redis ulandi")
+    except Exception as e:
+        logger.warning(f"Redis ulanmadi (cache o'chirildi): {e}")
+        _redis = None
+    return _redis
+
+def cache_get(key: str):
+    r = _get_redis()
+    if not r:
+        return None
+    try:
+        v = r.get(key)
+        return json.loads(v) if v else None
+    except Exception as e:
+        logger.warning(f"cache_get {key}: {e}")
+        return None
+
+def cache_set(key: str, value, ttl: int = CACHE_TTL):
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        r.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"cache_set {key}: {e}")
+
+def cache_del(*keys: str):
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        r.delete(*keys)
+    except Exception as e:
+        logger.warning(f"cache_del: {e}")
+
+def db_get_cached(tab: str) -> list:
+    """db_get with Redis cache-first, 5-min TTL. Falls back to Sheets on miss."""
+    key = f"sheet:{tab}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    data = db_get(tab)
+    cache_set(key, data)
+    return data
+
+def cache_invalidate(tab: str):
+    """Call after any write to a sheet tab to invalidate its cache."""
+    cache_del(f"sheet:{tab}")
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
 DEF_PRODS = [
@@ -190,7 +266,7 @@ DEF_PRODS = [
 
 def get_prods():
     try:
-        r=db_get("Mahsulotlar")
+        r=db_get_cached("Mahsulotlar")
         if r: return [{"id":int(x.get("ID",0)),"uz":x.get("Nomi_UZ",""),"ru":x.get("Nomi_RU",""),"unit":x.get("Birlik","kg")} for x in r if str(x.get("Faol","1"))=="1"]
     except: pass
     return DEF_PRODS
@@ -210,7 +286,7 @@ def fmtq(qty, unit, name="", top=False):
 
 # ── FOYDALANUVCHI ─────────────────────────────────────────────────────────────
 def get_user(uid):
-    for r in db_get("Foydalanuvchilar"):
+    for r in db_get_cached("Foydalanuvchilar"):
         if str(r.get("TG_ID","")).strip()==str(uid).strip(): return r
     return None
 
@@ -228,7 +304,7 @@ def la(ctx):
 
 # ── NARX ──────────────────────────────────────────────────────────────────────
 def get_price(pid, did=None, dokon_id=None):
-    recs=db_get("Narxlar")
+    recs=db_get_cached("Narxlar")
     def match(r,d,k): return str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(d or "") and str(r.get("Dokon_ID",""))==str(k or "")
     if did and dokon_id:
         for r in recs:
@@ -245,12 +321,14 @@ def set_price(pid, pname, price, cost, did="", dokon_id=""):
     if not w: return
     for i,r in enumerate(w.get_all_records()):
         if str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(did) and str(r.get("Dokon_ID",""))==str(dokon_id):
-            w.update(f"A{i+2}:G{i+2}",[[str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()]]); return
+            w.update(f"A{i+2}:G{i+2}",[[str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()]])
+            cache_invalidate("Narxlar"); return
     w.append_row([str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()])
+    cache_invalidate("Narxlar")
 
 # ── DO'KON & QARZ ────────────────────────────────────────────────────────────
 def get_stores(did=None):
-    r=db_get("Dokonlar")
+    r=db_get_cached("Dokonlar")
     return [x for x in r if str(x.get("Dist_ID","")).strip()==str(did).strip()] if did else r
 
 def get_debt(dokon_id):
@@ -1422,11 +1500,15 @@ async def di_mchj(upd,ctx):
 async def di_tel1(upd,ctx):
     phone=upd.message.contact.phone_number if upd.message.contact else clean_phone(upd.message.text)
     if len(phone.replace("+",""))<7:
-        await upd.message.reply_text("❌ Noto'g'ri!",reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True)); return S_DI_TEL1
+        await upd.message.reply_text("❌ Noto'g'ri telefon raqam!",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True))
+        return S_DI_TEL1
     ctx.user_data["dt1"]=phone
-    await upd.message.reply_text("📞 Tel 2 (yoki o'tkazish):",
+    await upd.message.reply_text("📞 Tel 2 (ixtiyoriy):",
         reply_markup=ReplyKeyboardRemove())
-    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 2:",reply_markup=ik1(("⏭","di_skip:tel2"))); return S_DI_TEL2
+    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 2 yoki o'tkazib yuboring:",
+        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:tel2")))
+    return S_DI_TEL2
 
 async def di_tel2(upd,ctx):
     if upd.callback_query: await ans(upd.callback_query); ctx.user_data["dt2"]=""
@@ -1435,15 +1517,26 @@ async def di_tel2(upd,ctx):
 
 async def di_ega(upd,ctx):
     ctx.user_data["de"]=upd.message.text.strip()
-    await upd.message.reply_text("📸 Do'kon rasmi (MAJBURIY):"); return S_DI_PHOTO
+    await upd.message.reply_text(
+        "📸 Do'kon rasmi (ixtiyoriy):",
+        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:photo")))
+    return S_DI_PHOTO
 
 async def di_photo(upd,ctx):
-    if not upd.message.photo:
-        await upd.message.reply_text("❗ Rasm yuboring!"); return S_DI_PHOTO
-    ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
-    # Avval ReplyKeyboard ni o'chir, keyin lokatsiya tugmasi bilan yangi xabar
-    await upd.message.reply_text(
-        "✅ Rasm qabul!\n\n📍 Lokatsiyani yuboring yoki o'tkazib yuboring:",
+    if upd.callback_query:
+        await ans(upd.callback_query)
+        ctx.user_data["dphoto"]=""
+    elif upd.message and upd.message.photo:
+        ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
+    elif upd.message and upd.message.text and upd.message.text.strip():
+        # User typed text instead of sending photo — remind them
+        await upd.message.reply_text(
+            "📸 Rasm yuboring yoki o'tkazib yuboring:",
+            reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:photo")))
+        return S_DI_PHOTO
+    await ctx.bot.send_message(
+        upd.effective_user.id,
+        "📍 Lokatsiyani yuboring yoki o'tkazib yuboring:",
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("📍 Lokatsiya yuborish", request_location=True)],
              ["⏭ O'tkazib yuborish"]],
@@ -2133,7 +2226,7 @@ def main():
             S_DI_TEL1:      [MessageHandler(ctxt,di_tel1)],
             S_DI_TEL2:      [MessageHandler(ctxt,di_tel2),CallbackQueryHandler(di_tel2,pattern="^di_skip:tel2$")],
             S_DI_EGA:       [MessageHandler(txt,di_ega)],
-            S_DI_PHOTO:     [MessageHandler(ptxt,di_photo)],
+            S_DI_PHOTO:     [MessageHandler(ptxt,di_photo),CallbackQueryHandler(di_photo,pattern="^di_skip:photo$")],
             S_DI_LOC: [
                 MessageHandler(filters.LOCATION, di_loc),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, di_loc),
