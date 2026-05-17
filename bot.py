@@ -1,10 +1,6 @@
 """Alba Milk Distribyutor Bot v5.0"""
 import os, logging, json, re, base64, random
 from datetime import datetime, timedelta, time as dtime
-try:
-    from dotenv import load_dotenv; load_dotenv()
-except ImportError:
-    pass
 import gspread
 from google.oauth2.service_account import Credentials
 import google.auth.transport.requests
@@ -22,10 +18,7 @@ BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
 CREDS_JSON  = os.environ.get("GOOGLE_CREDS_JSON", "")
 SHEET_ID    = os.environ.get("SPREADSHEET_ID", "")
 ADMIN_IDS   = [int(x) for x in os.environ.get("ADMIN_IDS","0").split(",") if x.strip()]
-CHANNEL_ID        = os.environ.get("CHANNEL_ID", "")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-UPSTASH_URL   = os.environ.get("UPSTASH_REDIS_REST_URL", "")
-UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+CHANNEL_ID  = os.environ.get("CHANNEL_ID", "")
 
 # ── STATES ────────────────────────────────────────────────────────────────────
 (S_LANG, S_REG_NAME, S_REG_FNAME, S_REG_PHONE, S_REG_PASS,
@@ -40,10 +33,7 @@ UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
  S_ADM_NARX_VAL, S_ADM_NARX_COST,
  S_ADM_DK_NAME, S_ADM_DK_ADDR, S_ADM_DK_DIST,
  S_ADM_DIST_NAME, S_ADM_DIST_TG,
- S_ADM_BC, S_TOLOV_SUMMA,
- S_TOP_ESLATMA_KUN, S_TOP_IZOH,
- S_SAVAT_SANA,
- S_VOICE_CONFIRM, S_VOICE_QTY) = range(46)
+ S_ADM_BC, S_TOLOV_SUMMA) = range(41)
 
 # ── SHEETS ────────────────────────────────────────────────────────────────────
 HEADERS = {
@@ -51,107 +41,42 @@ HEADERS = {
     "Mahsulotlar":      ["ID","Nomi_UZ","Nomi_RU","Birlik","Faol","Sana"],
     "Dokonlar":         ["ID","Nomi","Adres","MCHJ","Tel1","Tel2","Ega","Dist_ID","Dist_Ism","Lat","Lng","Channel_Msg_ID","Sana"],
     "Narxlar":          ["Mahsulot_ID","Mahsulot","Narx","Tannarx","Dist_ID","Dokon_ID","Sana"],
+    "Mahsulotlar_Dist_Default": ["Dist_ID","Mahsulot_ID","Mahsulot","Turi","Sotish_Narxi","Sana"],
+    "Mahsulotlar_Maxsus_Narx":  ["Dist_ID","Dokon_ID","Dokon_Nomi","Mahsulot_ID","Mahsulot","Turi","Sotish_Narxi","Sana"],
     "Qabul":            ["Sana","Dist_ID","Dist_Ism","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Qabul_ID"],
-    "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID","Eslatma_Kun","Eslatma_Sana","Izoh"],
-    "Savat":            ["Sana","Dist_ID","Zakaz_IDs","Kerak_Sana","Status","Savat_ID"],
+    "Topshirish":       ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Pay_Type","Naqd","Qarz","Status","Top_ID"],
     "Tolov":            ["Sana","Dist_ID","Dokon","Dokon_ID","Summa","Status","Tolov_ID"],
-    "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Birlik","Status","Zakaz_ID"],
+    "Buyurtmalar":      ["Sana","Dokon_ID","Dokon","Dist_ID","Mahsulot","Miqdor","Status","Zakaz_ID"],
     "Vozvrat":          ["Sana","Dist_ID","Dokon","Dokon_ID","Mahsulot","Miqdor","Birlik","Narx","Jami","Status","Voz_ID"],
     "Sozlamalar":       ["Kalit","Qiymat","Sana"],
 }
 
-def _load_creds_dict():
-    """Accept GOOGLE_CREDS_JSON as either a file path or raw JSON string."""
-    raw = CREDS_JSON.strip()
-    if not raw:
-        print("[ERROR] GOOGLE_CREDS_JSON env var is empty", flush=True)
-        return None
-    if raw.startswith("{"):
-        return json.loads(raw)
-    # treat as file path
-    import pathlib
-    p = pathlib.Path(raw)
-    if not p.is_absolute():
-        # resolve relative to bot.py's directory
-        p = pathlib.Path(__file__).parent / raw
-    if not p.exists():
-        print(f"[ERROR] Credentials file not found: {p}", flush=True)
-        return None
-    print(f"[DEBUG] Loading creds from file: {p}", flush=True)
-    return json.loads(p.read_text())
-
 def _sheet():
-    if not CREDS_JSON:
-        print("[ERROR] GOOGLE_CREDS_JSON not set", flush=True)
-        return None
+    if not CREDS_JSON: return None
     try:
-        creds_dict = _load_creds_dict()
-        if not creds_dict:
-            return None
         creds = Credentials.from_service_account_info(
-            creds_dict,
+            json.loads(CREDS_JSON),
             scopes=["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"])
-        wb = gspread.authorize(creds).open_by_key(SHEET_ID)
-        return wb
-    except Exception as e:
-        print(f"[ERROR] _sheet failed: {type(e).__name__}: {e}", flush=True)
-        logger.error(f"Sheet: {e}")
-        return None
-
-def _ensure_headers(w, name):
-    """Add header row if sheet is empty or first cell is wrong."""
-    if name not in HEADERS:
-        return
-    try:
-        first = w.cell(1, 1).value
-        if not first:
-            w.insert_row(HEADERS[name], 1)
-            print(f"[DEBUG] Headers written to '{name}'", flush=True)
-    except Exception as e:
-        print(f"[ERROR] _ensure_headers {name}: {e}", flush=True)
+        return gspread.authorize(creds).open_by_key(SHEET_ID)
+    except Exception as e: logger.error(f"Sheet: {e}"); return None
 
 def ws(name):
     wb = _sheet()
-    if not wb:
-        print(f"[ERROR] ws('{name}'): _sheet() returned None", flush=True)
-        return None
-    try:
-        w = wb.worksheet(name)
-        return w
+    if not wb: return None
+    try: return wb.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
-        print(f"[DEBUG] Sheet '{name}' not found — creating it", flush=True)
         w = wb.add_worksheet(name, 3000, 25)
-        if name in HEADERS:
-            w.append_row(HEADERS[name])
-            print(f"[DEBUG] Sheet '{name}' created with headers", flush=True)
+        if name in HEADERS: w.append_row(HEADERS[name])
         return w
-    except Exception as e:
-        print(f"[ERROR] ws('{name}'): {type(e).__name__}: {e}", flush=True)
-        logger.error(f"ws {name}: {e}")
-        return None
+    except Exception as e: logger.error(f"ws {name}: {e}"); return None
 
 def db_get(tab):
-    try:
-        w = ws(tab)
-        return w.get_all_records() if w else []
-    except Exception as e:
-        print(f"[ERROR] db_get '{tab}': {type(e).__name__}: {e}", flush=True)
-        logger.error(f"db_get {tab}: {e}")
-        return []
+    try: w=ws(tab); return w.get_all_records() if w else []
+    except Exception as e: logger.error(f"db_get {tab}: {e}"); return []
 
 def db_add(tab, row):
-    try:
-        w = ws(tab)
-        if not w:
-            print(f"[ERROR] db_add '{tab}': ws returned None, row={row}", flush=True)
-            return
-        _ensure_headers(w, tab)
-        w.append_row([str(x) for x in row])
-        cache_invalidate(tab)
-        print(f"[DEBUG] db_add '{tab}' OK: {row}", flush=True)
-    except Exception as e:
-        print(f"[ERROR] db_add '{tab}' FAILED: {type(e).__name__}: {e}", flush=True)
-        logger.error(f"db_add {tab}: {e}")
+    try: w=ws(tab); w and w.append_row([str(x) for x in row])
+    except Exception as e: logger.error(f"db_add {tab}: {e}")
 
 def db_set(tab, sc, sv, uc, uv):
     try:
@@ -161,9 +86,7 @@ def db_set(tab, sc, sv, uc, uv):
         if uc not in h: return
         for i,r in enumerate(w.get_all_records()):
             if str(r.get(sc,"")).strip()==str(sv).strip():
-                w.update_cell(i+2,h.index(uc)+1,str(uv))
-                cache_invalidate(tab)
-                return
+                w.update_cell(i+2,h.index(uc)+1,str(uv)); return
     except Exception as e: logger.error(f"db_set {tab}: {e}")
 
 def db_del(tab, sc, sv):
@@ -172,78 +95,13 @@ def db_del(tab, sc, sv):
         if not w: return
         for i,r in enumerate(w.get_all_records()):
             if str(r.get(sc,"")).strip()==str(sv).strip():
-                w.delete_rows(i+2)
-                cache_invalidate(tab)
-                return
+                w.delete_rows(i+2); return
     except Exception as e: logger.error(f"db_del {tab}: {e}")
 
 now_s  = lambda: datetime.now().strftime("%Y-%m-%d %H:%M")
 today_s= lambda: datetime.now().strftime("%Y-%m-%d")
 mk_id  = lambda p="": p+datetime.now().strftime("%m%d%H%M%S")+str(random.randint(10,99))
 mk_sid = lambda: str(random.randint(100000,999999))
-
-# ── REDIS CACHE (Upstash REST) ────────────────────────────────────────────────
-CACHE_TTL = 300  # 5 minutes
-_upstash = None
-
-def _get_upstash():
-    global _upstash
-    if _upstash is not None:
-        return _upstash
-    if not UPSTASH_URL or not UPSTASH_TOKEN:
-        return None
-    try:
-        from upstash_redis import Redis
-        _upstash = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN)
-        _upstash.ping()
-        logger.info("✅ Upstash Redis ulandi")
-    except Exception as e:
-        logger.warning(f"Upstash ulanmadi (cache o'chirildi): {e}")
-        _upstash = None
-    return _upstash
-
-def cache_get(key: str):
-    r = _get_upstash()
-    if not r:
-        return None
-    try:
-        v = r.get(key)
-        return json.loads(v) if v else None
-    except Exception as e:
-        logger.warning(f"cache_get {key}: {e}")
-        return None
-
-def cache_set(key: str, value, ttl: int = CACHE_TTL):
-    r = _get_upstash()
-    if not r:
-        return
-    try:
-        r.setex(key, ttl, json.dumps(value, ensure_ascii=False))
-    except Exception as e:
-        logger.warning(f"cache_set {key}: {e}")
-
-def cache_del(*keys: str):
-    r = _get_upstash()
-    if not r:
-        return
-    try:
-        r.delete(*keys)
-    except Exception as e:
-        logger.warning(f"cache_del: {e}")
-
-def db_get_cached(tab: str) -> list:
-    """db_get with Redis cache-first, 5-min TTL. Falls back to Sheets on miss."""
-    key = f"sheet:{tab}"
-    cached = cache_get(key)
-    if cached is not None:
-        return cached
-    data = db_get(tab)
-    cache_set(key, data)
-    return data
-
-def cache_invalidate(tab: str):
-    """Call after any write to a sheet tab to invalidate its cache."""
-    cache_del(f"sheet:{tab}")
 
 # ── MAHSULOTLAR ───────────────────────────────────────────────────────────────
 DEF_PRODS = [
@@ -260,7 +118,7 @@ DEF_PRODS = [
 
 def get_prods():
     try:
-        r=db_get_cached("Mahsulotlar")
+        r=db_get("Mahsulotlar")
         if r: return [{"id":int(x.get("ID",0)),"uz":x.get("Nomi_UZ",""),"ru":x.get("Nomi_RU",""),"unit":x.get("Birlik","kg")} for x in r if str(x.get("Faol","1"))=="1"]
     except: pass
     return DEF_PRODS
@@ -280,7 +138,7 @@ def fmtq(qty, unit, name="", top=False):
 
 # ── FOYDALANUVCHI ─────────────────────────────────────────────────────────────
 def get_user(uid):
-    for r in db_get_cached("Foydalanuvchilar"):
+    for r in db_get("Foydalanuvchilar"):
         if str(r.get("TG_ID","")).strip()==str(uid).strip(): return r
     return None
 
@@ -292,13 +150,11 @@ def get_sid(uid):
     if int(uid) in ADMIN_IDS: return "ADMIN"
     u=get_user(uid); return u.get("Short_ID","?") if u else "?"
 
-def la(ctx):
-    l=ctx.user_data.get("lang","uz")
-    return "uz" if l=="kir" else l
+def la(ctx): return ctx.user_data.get("lang","uz")
 
 # ── NARX ──────────────────────────────────────────────────────────────────────
 def get_price(pid, did=None, dokon_id=None):
-    recs=db_get_cached("Narxlar")
+    recs=db_get("Narxlar")
     def match(r,d,k): return str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(d or "") and str(r.get("Dokon_ID",""))==str(k or "")
     if did and dokon_id:
         for r in recs:
@@ -315,14 +171,38 @@ def set_price(pid, pname, price, cost, did="", dokon_id=""):
     if not w: return
     for i,r in enumerate(w.get_all_records()):
         if str(r.get("Mahsulot_ID",""))==str(pid) and str(r.get("Dist_ID",""))==str(did) and str(r.get("Dokon_ID",""))==str(dokon_id):
-            w.update(f"A{i+2}:G{i+2}",[[str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()]])
-            cache_invalidate("Narxlar"); return
-    w.append_row([str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()])
-    cache_invalidate("Narxlar")
+            w.update(f"A{i+2}:G{i+2}",[[str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()]]); break
+    else:
+        w.append_row([str(pid),pname,str(price),str(cost),str(did),str(dokon_id),now_s()])
+    # Log to audit sheets
+    if did and not dokon_id:
+        _log_dist_default(did, pid, pname, price)
+    elif did and dokon_id:
+        _log_maxsus_narx(did, dokon_id, pid, pname, price)
+
+def _log_dist_default(did, pid, pname, price):
+    """Log distributor default price — keep latest per (Dist_ID, Mahsulot_ID)"""
+    w=ws("Mahsulotlar_Dist_Default")
+    if not w: return
+    for i,r in enumerate(w.get_all_records()):
+        if str(r.get("Dist_ID",""))==str(did) and str(r.get("Mahsulot_ID",""))==str(pid):
+            w.update(f"A{i+2}:F{i+2}",[[str(did),str(pid),pname,"default",str(price),now_s()]]); return
+    w.append_row([str(did),str(pid),pname,"default",str(price),now_s()])
+
+def _log_maxsus_narx(did, dokon_id, pid, pname, price):
+    """Log shop-specific price — keep latest per (Dist_ID, Dokon_ID, Mahsulot_ID)"""
+    w=ws("Mahsulotlar_Maxsus_Narx")
+    if not w: return
+    stores=db_get("Dokonlar")
+    dokon_nomi=next((s.get("Nomi","") for s in stores if str(s.get("ID",""))==str(dokon_id)),"")
+    for i,r in enumerate(w.get_all_records()):
+        if str(r.get("Dist_ID",""))==str(did) and str(r.get("Dokon_ID",""))==str(dokon_id) and str(r.get("Mahsulot_ID",""))==str(pid):
+            w.update(f"A{i+2}:H{i+2}",[[str(did),str(dokon_id),dokon_nomi,str(pid),pname,"maxsus",str(price),now_s()]]); return
+    w.append_row([str(did),str(dokon_id),dokon_nomi,str(pid),pname,"maxsus",str(price),now_s()])
 
 # ── DO'KON & QARZ ────────────────────────────────────────────────────────────
 def get_stores(did=None):
-    r=db_get_cached("Dokonlar")
+    r=db_get("Dokonlar")
     return [x for x in r if str(x.get("Dist_ID","")).strip()==str(did).strip()] if did else r
 
 def get_debt(dokon_id):
@@ -462,23 +342,14 @@ def ik1(*btns):
 
 def back(cb="m:main"): return ik1(("🔙 Orqaga",cb))
 
-def main_kb(uid, l="uz"):
-    if l == "kir":
-        rows=[
-            [("📥 Заводдан қабул","m:zav"),("📋 Буюртмалар","m:buy")],
-            [("🚚 Товар топшириш","m:top"),("💵 Тўлов","m:tol")],
-            [("📊 Кунлик","m:nat"),("📦 Омбор","m:omb")],
-            [("🛒 Сават","m:savat"),("📈 Ҳисобот","m:his")],
-            [("🏪 Дўконларим","m:dok"),("💰 Нархларим","m:nar")],
-        ]
-    else:
-        rows=[
-            [("📥 Zavoddan qabul","m:zav"),("📋 Buyurtmalar","m:buy")],
-            [("🚚 Tovar topshirish","m:top"),("💵 To'lov","m:tol")],
-            [("📊 Kunlik","m:nat"),("📦 Ombor","m:omb")],
-            [("🛒 Savat","m:savat"),("📈 Hisobot","m:his")],
-            [("🏪 Do'konlarim","m:dok"),("💰 Narxlarim","m:nar")],
-        ]
+def main_kb(uid):
+    rows=[
+        [("📥 Zavod qabul","m:zav"),("📋 Buyurtmalar","m:buy")],
+        [("🚚 Topshirish","m:top"),("💵 To'lov","m:tol")],
+        [("📊 Kunlik","m:nat"),("📦 Ombor","m:omb")],
+        [("🗺 Marshrut","m:mar"),("📈 Hisobot","m:his")],
+        [("🏪 Do'konlarim","m:dok"),("💰 Narxlarim","m:nar")],
+    ]
     if int(uid) in ADMIN_IDS: rows.append([("⚙️ Admin","m:adm")])
     rows.append([("🔄 /start","m:start")])
     return InlineKeyboardMarkup([[InlineKeyboardButton(b[0],callback_data=b[1]) for b in row] for row in rows])
@@ -502,9 +373,9 @@ def loc_kb():   return ReplyKeyboardMarkup([[KeyboardButton("📍 Lokatsiya yubo
 
 async def send_main(upd_or_uid, ctx, edit=False):
     uid=upd_or_uid.effective_user.id if hasattr(upd_or_uid,'effective_user') else upd_or_uid
-    sid=get_sid(uid); disp_l=ctx.user_data.get("lang","uz")
-    txt=f"📋 <b>{'Асосий менью' if disp_l=='kir' else 'Asosiy menyu'}</b>\n🔑 ID: <b>{sid}</b>"
-    kb=main_kb(uid, disp_l)
+    sid=get_sid(uid); l=ctx.user_data.get("lang","uz")
+    txt=f"📋 <b>Asosiy menyu</b>\n🔑 ID: <b>{sid}</b>"
+    kb=main_kb(uid)
     if edit and hasattr(upd_or_uid,'callback_query') and upd_or_uid.callback_query:
         try: await upd_or_uid.callback_query.edit_message_text(txt,reply_markup=kb,parse_mode="HTML"); return
         except: pass
@@ -537,13 +408,12 @@ async def start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         if st=="rad_etildi":
             await upd.message.reply_text("❌ Rad etildi. Ism kiriting:"); return S_REG_NAME
         await upd.message.reply_text("⏳ Tasdiqlanmagan.",reply_markup=ik1(("📤 Qayta yuborish","resend"))); return S_WAIT
-    await upd.message.reply_text("Tilni tanlang:",reply_markup=ikr([("🇺🇿 O'zbek (lotin)","lang:uz"),("🇺🇿 Ўзбек (кирилл)","lang:kir")],[("🇷🇺 Русский","lang:ru")])); return S_LANG
+    await upd.message.reply_text("Tilni tanlang:",reply_markup=ikr([("🇺🇿 O'zbek","lang:uz"),("🇷🇺 Русский","lang:ru")])); return S_LANG
 
 async def lang_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     q=upd.callback_query; await ans(q)
     ctx.user_data["lang"]=q.data.split(":")[1]
-    prompt={"uz":"Ismingizni kiriting:","kir":"Исмингизни киритинг:","ru":"Введите имя:"}.get(ctx.user_data["lang"],"Ismingizni kiriting:")
-    await q.edit_message_text(prompt); return S_REG_NAME
+    await q.edit_message_text("Ismingizni kiriting:"); return S_REG_NAME
 
 async def reg_name(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     ctx.user_data["rn"]=upd.message.text.strip()
@@ -559,19 +429,16 @@ async def reg_phone(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if len(phone.replace("+",""))<7:
         await upd.message.reply_text("❌ Noto'g'ri!",reply_markup=phone_kb()); return S_REG_PHONE
     ctx.user_data["rph"]=phone
-    await upd.message.reply_text("...",reply_markup=ReplyKeyboardRemove())
-    await upd.message.reply_text("📸 Passport yoki shaxsiy guvohnoma RASMINI yuboring (MAJBURIY):"); return S_REG_PASS
+    await upd.message.reply_text("📷 Passport (yoki o'tkazib yuborish):",
+        reply_markup=ik1(("⏭ O'tkazib yuborish","skip_pass")),
+        reply_markup_override=ReplyKeyboardRemove()); return S_REG_PASS
 
 async def reg_pass(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id; l=la(ctx)
-    if upd.callback_query:
-        await ans(upd.callback_query)
-        await ctx.bot.send_message(uid,"❌ Rasm yuboring, matn emas! 📸\nPassport yoki guvohnoma rasmini tanlang.")
-        return S_REG_PASS
-    if not upd.message.photo:
-        await upd.message.reply_text("❌ Iltimos rasm yuboring, matn emas! 📸\nPassport yoki guvohnoma rasmini tanlang.")
-        return S_REG_PASS
-    passport="rasm_bor"; photo=upd.message.photo[-1].file_id
+    if upd.callback_query: await ans(upd.callback_query); passport="otkazildi"; photo=None
+    else:
+        passport="rasm_bor" if upd.message.photo else (upd.message.text or "otkazildi")
+        photo=upd.message.photo[-1].file_id if upd.message.photo else None
     name=ctx.user_data.get("rn",""); fname=ctx.user_data.get("rf",""); phone=ctx.user_data.get("rph","")
     sid=mk_sid(); full=f"{name} {fname}".strip()
     db_del("Foydalanuvchilar","TG_ID",str(uid))
@@ -634,9 +501,8 @@ async def main_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if d=="m:mar":   return await mar_show(upd,ctx)
     if d=="m:his":   return await his_menu(upd,ctx)
     if d=="m:dok":   return await dok_show(upd,ctx)
-    if d=="m:nar":    return await nar_start(upd,ctx)
-    if d=="m:savat":  return await savat_show(upd,ctx)
-    if d=="m:adm":    return await adm_menu(upd,ctx)
+    if d=="m:nar":   return await nar_start(upd,ctx)
+    if d=="m:adm":   return await adm_menu(upd,ctx)
     return S_MAIN
 
 # ── ZAVOD QABUL ───────────────────────────────────────────────────────────────
@@ -877,18 +743,16 @@ async def save_top(upd,ctx):
             return S_TOP_PAY
 
     tid=mk_id("T"); u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else uid
-    db_add("Topshirish",[now_s(),uid,s.get("Nomi",""),sid,p.get(l,""),qty,p.get("unit",""),price,jami,pay_type,effective_naqd,qarz,"tasdiqlangan",tid,"","",""])
+    db_add("Topshirish",[now_s(),uid,s.get("Nomi",""),sid,p.get(l,""),qty,p.get("unit",""),price,jami,pay_type,effective_naqd,qarz,"tasdiqlangan",tid])
     qty_str=fmtq(qty,p.get("unit",""),p.get(l,""),True)
-    msg=f"✅ <b>Tovar topshirildi!</b>\n🏪 {s.get('Nomi','')}\n📦 {p.get(l,'')}: {qty_str}\n💰 Jami: {jami:,.0f}\n💵 Naqd: {effective_naqd:,.0f}\n📝 Qarz: {qarz:,.0f}"
+    msg=f"✅ <b>Mol topshirildi!</b>\n🏪 {s.get('Nomi','')}\n📦 {p.get(l,'')}: {qty_str}\n💰 Jami: {jami:,.0f}\n💵 Naqd: {effective_naqd:,.0f}\n📝 Qarz: {qarz:,.0f}"
     if vjami>0: msg+=f"\n↩️ Vozvrat: -{vjami:,.0f}"
     for k in ["tp","ts","tqty","tnaqd","vjami","pay_type","torders","vprods","vprod","scale_photo","_ocr","_pending_top"]: ctx.user_data.pop(k,None)
-    ctx.user_data["last_tid"]=tid
     if upd.callback_query:
         try: await upd.callback_query.edit_message_text(msg,parse_mode="HTML")
         except: pass
     else: await upd.message.reply_text(msg,parse_mode="HTML")
-    await ctx.bot.send_message(int(uid),"📅 Necha kundan keyin eslatma yuborilsin? (1-30 son kiriting):",reply_markup=ReplyKeyboardRemove())
-    return S_TOP_ESLATMA_KUN
+    await send_main(upd,ctx); return S_MAIN
 
 async def top_confirm_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     q=upd.callback_query; await ans(q)
@@ -929,405 +793,6 @@ async def buy_show(upd,ctx):
     lines+=["━━━━━━━━━━━━━━━━","📊 <b>Jami:</b>"]
     for pn,q in jami.items(): lines.append(f"  • {pn}: {fmtq(q,'dona',pn,False)}")
     await esend(upd,ctx,"\n".join(lines),back()); return S_MAIN
-
-# ── OVOZLI XABAR ─────────────────────────────────────────────────────────────
-
-async def _transcribe_voice(file_bytes: bytes, lang: str = "uz") -> str:
-    """Google Cloud Speech-to-Text REST — accepts OGG/Opus directly, no ffmpeg."""
-    lang_code = {"uz": "uz-UZ", "ru": "ru-RU", "kir": "uz-UZ"}.get(lang, "uz-UZ")
-    alts = ["ru-RU"] if lang_code == "uz-UZ" else ["uz-UZ"]
-    try:
-        import httpx
-        creds = Credentials.from_service_account_info(
-            json.loads(CREDS_JSON),
-            scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        creds.refresh(google.auth.transport.requests.Request())
-        async with httpx.AsyncClient(timeout=30) as c:
-            resp = await c.post(
-                "https://speech.googleapis.com/v1/speech:recognize",
-                headers={"Authorization": f"Bearer {creds.token}"},
-                json={"config": {"encoding": "OGG_OPUS",
-                                  "sampleRateHertz": 16000,
-                                  "languageCode": lang_code,
-                                  "alternativeLanguageCodes": alts},
-                      "audio": {"content": base64.b64encode(file_bytes).decode()}})
-        results = resp.json().get("results", [])
-        if results:
-            return results[0]["alternatives"][0]["transcript"].strip()
-        logger.warning(f"Speech API empty result: {resp.json()}")
-    except Exception as e:
-        logger.error(f"_transcribe_voice: {e}")
-    return ""
-
-
-def _claude_extract(text: str, shop_names: list, prod_names: list) -> dict:
-    """Claude Haiku-4.5: extract structured action from Uzbek/Russian transcript."""
-    if not ANTHROPIC_API_KEY:
-        logger.warning("ANTHROPIC_API_KEY not set — skipping extraction")
-        return {}
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            system=(
-                "Distribyutor botining yordamchisi. Ovozli xabardan ma'lumot ajrat.\n"
-                "FAQAT JSON qaytargil (boshqa matn yo'q):\n"
-                '{"action":"qabul|topshirish|tolov|buyurtma",'
-                '"shop":null,"product":null,"qty":null,'
-                '"amount":null,"pay_type":"naqd|real|null"}\n\n'
-                "action izohlar:\n"
-                "- qabul: zavoddan qabul, oldi, keldi, omborga\n"
-                "- topshirish: do'konga berdi, topshirdi, yetkazdi\n"
-                "- tolov: to'lov oldi, pul oldi, hisob-kitob\n"
-                "- buyurtma: buyurtma berdi, kerak, so'radi\n"
-                "Aniqlanmagan maydonlar uchun null yoz."
-            ),
-            messages=[{"role": "user", "content":
-                f"Mavjud do'konlar: {', '.join(shop_names[:12])}\n"
-                f"Mavjud mahsulotlar: {', '.join(prod_names)}\n\n"
-                f"Ovozli matn: {text}"}]
-        )
-        raw = resp.content[0].text.strip()
-        m = re.search(r'\{[^}]+\}', raw, re.DOTALL)
-        return json.loads(m.group(0)) if m else {}
-    except Exception as e:
-        logger.error(f"_claude_extract: {e}")
-        return {}
-
-
-def _match_shop(name: str, shops: list):
-    if not name:
-        return None
-    nl = name.lower()
-    for s in shops:
-        sn = s.get("Nomi", "").lower()
-        if nl == sn or nl in sn or sn in nl:
-            return s
-    words = [w for w in nl.split() if len(w) > 2]
-    for s in shops:
-        sn = s.get("Nomi", "").lower()
-        if any(w in sn for w in words):
-            return s
-    return None
-
-
-def _match_prod(name: str, prods: list):
-    if not name:
-        return None
-    nl = name.lower()
-    for p in prods:
-        if nl in p["uz"].lower() or p["uz"].lower() in nl:
-            return p
-    words = [w for w in nl.split() if len(w) > 2]
-    for p in prods:
-        if any(w in p["uz"].lower() for w in words):
-            return p
-    return None
-
-
-def _voice_missing(d: dict, shop, prod, action: str):
-    """Return name of next missing required field, or None if complete."""
-    if action in ("topshirish", "tolov", "buyurtma") and not shop:
-        return "shop"
-    if action in ("qabul", "topshirish", "buyurtma") and not prod:
-        return "prod"
-    if action in ("qabul", "topshirish", "buyurtma") and not d.get("qty"):
-        return "qty"
-    if action == "tolov" and not d.get("amount"):
-        return "amount"
-    return None
-
-
-async def _voice_show_card(target, ctx, edit: bool = False) -> int:
-    """Build and send/edit the voice confirmation card. Returns next state."""
-    d = ctx.user_data.get("vd", {})
-    shop = ctx.user_data.get("vs")
-    prod = ctx.user_data.get("vp")
-    text = ctx.user_data.get("vt", "")
-    action = d.get("action", "")
-
-    action_lbl = {"qabul": "📥 Zavod qabul", "topshirish": "🚚 Topshirish",
-                  "tolov": "💵 To'lov", "buyurtma": "📋 Buyurtma"}
-    lines = [f"🎤 <i>{text}</i>", "━━━━━━━━━━━━━━━━",
-             f"📌 <b>{action_lbl.get(action, action)}</b>"]
-
-    if shop:
-        lines.append(f"🏪 {shop.get('Nomi', '')}")
-    if prod:
-        lines.append(f"📦 {prod['uz']}")
-    qty = d.get("qty")
-    if qty:
-        unit = prod["unit"] if prod else "dona"
-        lines.append(f"📊 {qty} {unit}")
-    amount = d.get("amount")
-    if amount:
-        lines.append(f"💰 {amount:,.0f} so'm")
-    if action == "topshirish":
-        pt = d.get("pay_type") or "naqd"
-        lines.append(f"💳 {'Naqd' if pt == 'naqd' else 'Realizatsiya'}")
-
-    missing = _voice_missing(d, shop, prod, action)
-
-    if missing == "shop":
-        shops = ctx.user_data.get("vstores", [])
-        lines.append("\n❓ Do'konni tanlang:")
-        kb = [[InlineKeyboardButton(s.get("Nomi", ""), callback_data=f"vs:{s.get('ID', '')}")]
-              for s in shops[:8]]
-        kb.append([InlineKeyboardButton("❌ Bekor", callback_data="vc")])
-    elif missing == "prod":
-        lines.append("\n❓ Mahsulotni tanlang:")
-        prods = get_prods()
-        kb = [[InlineKeyboardButton(p["uz"], callback_data=f"vp:{p['id']}")]
-              for p in prods[:8]]
-        kb.append([InlineKeyboardButton("❌ Bekor", callback_data="vc")])
-    elif missing == "qty":
-        lines.append("\n❓ Miqdorni kiriting:")
-        kb = [[InlineKeyboardButton("❌ Bekor", callback_data="vc")]]
-    elif missing == "amount":
-        lines.append("\n❓ Summani kiriting (so'm):")
-        kb = [[InlineKeyboardButton("❌ Bekor", callback_data="vc")]]
-    else:
-        if action == "topshirish" and not d.get("pay_type"):
-            lines.append("\n❓ To'lov turini tanlang:")
-            kb = [[InlineKeyboardButton("💵 Naqd", callback_data="vpt:naqd"),
-                   InlineKeyboardButton("📝 Realizatsiya", callback_data="vpt:real")],
-                  [InlineKeyboardButton("❌ Bekor", callback_data="vc")]]
-            missing = "pay_type"
-        else:
-            lines.append("\n✅ To'g'rimi?")
-            kb = [[InlineKeyboardButton("✅ Tasdiqlash", callback_data="vok"),
-                   InlineKeyboardButton("❌ Bekor", callback_data="vc")]]
-
-    txt = "\n".join(lines)
-    kb_mu = InlineKeyboardMarkup(kb)
-    if edit:
-        await target.edit_message_text(txt, reply_markup=kb_mu, parse_mode="HTML")
-    else:
-        await target.reply_text(txt, reply_markup=kb_mu, parse_mode="HTML")
-
-    return S_VOICE_QTY if missing in ("qty", "amount") else S_VOICE_CONFIRM
-
-
-async def _voice_save(upd, ctx) -> int:
-    uid = str(upd.effective_user.id)
-    d = ctx.user_data.get("vd", {})
-    shop = ctx.user_data.get("vs")
-    prod = ctx.user_data.get("vp")
-    action = d.get("action", "")
-    q = upd.callback_query
-
-    u = get_user(uid)
-    dn = f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else str(uid)
-
-    try:
-        if action == "qabul":
-            qty = float(d.get("qty") or 0)
-            pn = prod["uz"] if prod else ""
-            pu = prod["unit"] if prod else "kg"
-            pid = prod["id"] if prod else 0
-            price, _ = get_price(pid, uid)
-            if not price: price, _ = get_price(pid)
-            jami = qty * price
-            qid = mk_id("Q")
-            db_add("Qabul", [now_s(), uid, dn, pn, qty, pu, price, jami, "kutilmoqda", qid])
-            for adm in ADMIN_IDS:
-                try:
-                    await ctx.bot.send_message(
-                        adm,
-                        f"⏳ <b>ZAVOD SO'ROVI</b> (🎤 ovoz)\n{dn}\n"
-                        f"{pn}: {qty} {pu}\nJami: {jami:,.0f}\n"
-                        f"✅ /zok_{qid}\n❌ /zrad_{qid}", parse_mode="HTML")
-                except: pass
-            msg = f"✅ <b>Qabul so'rovi!</b>\n📦 {pn}: {qty} {pu}\n⏳ Admin tasdiqlaydi"
-
-        elif action == "topshirish":
-            qty = float(d.get("qty") or 0)
-            pay_type = d.get("pay_type") or "naqd"
-            sid = str(shop.get("ID", "")) if shop else ""
-            sn = shop.get("Nomi", "") if shop else ""
-            pn = prod["uz"] if prod else ""
-            pu = prod["unit"] if prod else "kg"
-            pid = prod["id"] if prod else 0
-            price, _ = get_price(pid, uid, sid)
-            if not price: price, _ = get_price(pid, uid)
-            if not price: price, _ = get_price(pid)
-            jami = qty * price
-            naqd = jami if pay_type == "naqd" else 0
-            qarz = 0 if pay_type == "naqd" else jami
-            tid = mk_id("T")
-            db_add("Topshirish", [now_s(), uid, sn, sid, pn, qty, pu,
-                                   price, jami, pay_type, naqd, qarz,
-                                   "tasdiqlangan", tid, "", "", "🎤 ovoz"])
-            ctx.user_data["last_tid"] = tid
-            msg = (f"✅ <b>Topshirildi!</b>\n🏪 {sn}\n"
-                   f"📦 {pn}: {qty} {pu}\n💰 {jami:,.0f}")
-
-        elif action == "tolov":
-            amount = float(d.get("amount") or 0)
-            if amount <= 0:
-                amount = get_debt(str(shop.get("ID", "")) if shop else "")
-            sid = str(shop.get("ID", "")) if shop else ""
-            sn = shop.get("Nomi", "") if shop else ""
-            db_add("Tolov", [now_s(), uid, sn, sid, amount, "tasdiqlangan", mk_id("TOL")])
-            msg = f"✅ <b>To'lov!</b>\n🏪 {sn}\n💰 {amount:,.0f} so'm"
-
-        elif action == "buyurtma":
-            qty = float(d.get("qty") or 0)
-            sid = str(shop.get("ID", "")) if shop else ""
-            sn = shop.get("Nomi", "") if shop else ""
-            pn = prod["uz"] if prod else ""
-            pu = prod["unit"] if prod else "dona"
-            zid = mk_id("Z")
-            db_add("Buyurtmalar", [now_s(), sid, sn, uid, pn, qty, pu, "Yangi", zid])
-            msg = f"✅ <b>Buyurtma!</b>\n🏪 {sn}\n📦 {pn}: {qty} {pu}"
-
-        else:
-            msg = "❌ Noma'lum amal"
-
-    except Exception as e:
-        logger.error(f"_voice_save: {e}")
-        msg = f"❌ Xatolik: {type(e).__name__}: {e}"
-
-    for k in ["vd", "vs", "vp", "vt", "vstores", "vattempts"]:
-        ctx.user_data.pop(k, None)
-
-    try:
-        await q.edit_message_text(msg, parse_mode="HTML")
-    except Exception:
-        await upd.effective_message.reply_text(msg, parse_mode="HTML")
-
-    await ctx.bot.send_message(int(uid), "Asosiy menyu:", reply_markup=main_kb(uid))
-
-    if action == "topshirish":
-        await ctx.bot.send_message(
-            int(uid),
-            "📅 Necha kundan keyin eslatma? (1-30 son):",
-            reply_markup=ReplyKeyboardRemove())
-        return S_TOP_ESLATMA_KUN
-
-    return S_MAIN
-
-
-async def voice_handler(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = str(upd.effective_user.id)
-    if not approved(uid):
-        return S_MAIN
-
-    await upd.message.reply_text("🎤 Tahlil qilinmoqda...", reply_markup=ReplyKeyboardRemove())
-
-    f = await ctx.bot.get_file(upd.message.voice.file_id)
-    file_bytes = bytes(await f.download_as_bytearray())
-
-    text = await _transcribe_voice(file_bytes, la(ctx))
-
-    if not text:
-        attempts = ctx.user_data.get("vattempts", 0) + 1
-        ctx.user_data["vattempts"] = attempts
-        if attempts >= 2:
-            ctx.user_data.pop("vattempts", None)
-            await upd.message.reply_text(
-                "❌ 2 marta tanib bo'lmadi. Qo'lda kiriting:",
-                reply_markup=main_kb(uid))
-            return S_MAIN
-        await upd.message.reply_text(
-            f"❌ Ovoz tanib bo'lmadi ({attempts}/2).\n"
-            "Aniqroq gapirib qaytadan yuboring.")
-        return S_MAIN
-
-    ctx.user_data.pop("vattempts", None)
-
-    shops = get_stores(uid)
-    prods = get_prods()
-    d = _claude_extract(text, [s.get("Nomi","") for s in shops],
-                        [p["uz"] for p in prods])
-
-    if not d or not d.get("action"):
-        await upd.message.reply_text(
-            f"🎤 <i>{text}</i>\n\n"
-            "❓ Amal aniqlanmadi. Namunalar:\n"
-            "• <i>\"Supermarketga 10 kg sut topshirdim\"</i>\n"
-            "• <i>\"Zavoddan 50 kg tvorog oldim\"</i>\n"
-            "• <i>\"Bahordan 300 ming to'lov oldim\"</i>\n"
-            "• <i>\"Bahor 5 kg qatiq so'radi\"</i>",
-            reply_markup=main_kb(uid), parse_mode="HTML")
-        return S_MAIN
-
-    for fld in ("qty", "amount"):
-        if d.get(fld):
-            try:
-                d[fld] = float(d[fld])
-            except (TypeError, ValueError):
-                d[fld] = None
-
-    ctx.user_data["vd"] = d
-    ctx.user_data["vs"] = _match_shop(d.get("shop") or "", shops)
-    ctx.user_data["vp"] = _match_prod(d.get("product") or "", prods)
-    ctx.user_data["vt"] = text
-    ctx.user_data["vstores"] = shops
-
-    return await _voice_show_card(upd.message, ctx)
-
-
-async def voice_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query
-    await ans(q)
-    uid = str(upd.effective_user.id)
-    d = q.data
-
-    if d == "vc":
-        for k in ["vd", "vs", "vp", "vt", "vstores", "vattempts"]:
-            ctx.user_data.pop(k, None)
-        await q.edit_message_text("❌ Bekor qilindi.")
-        await ctx.bot.send_message(int(uid), "Asosiy menyu:", reply_markup=main_kb(uid))
-        return S_MAIN
-
-    if d == "vok":
-        return await _voice_save(upd, ctx)
-
-    if d.startswith("vs:"):
-        sid = d[3:]
-        s = next((x for x in ctx.user_data.get("vstores", [])
-                  if str(x.get("ID", "")) == sid), None)
-        if s:
-            ctx.user_data["vs"] = s
-        return await _voice_show_card(q, ctx, edit=True)
-
-    if d.startswith("vp:"):
-        pid = int(d[3:])
-        p = next((x for x in get_prods() if x["id"] == pid), None)
-        if p:
-            ctx.user_data["vp"] = p
-        return await _voice_show_card(q, ctx, edit=True)
-
-    if d.startswith("vpt:"):
-        ctx.user_data["vd"]["pay_type"] = d[4:]
-        return await _voice_show_card(q, ctx, edit=True)
-
-    return S_VOICE_CONFIRM
-
-
-async def voice_qty_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handles qty or amount text input during voice flow."""
-    action = ctx.user_data.get("vd", {}).get("action", "")
-    t = upd.message.text.strip()
-    if action == "tolov":
-        val = parse_money(t)
-        if val <= 0:
-            await upd.message.reply_text("❌ Noto'g'ri summa. So'm da kiriting:")
-            return S_VOICE_QTY
-        ctx.user_data["vd"]["amount"] = val
-    else:
-        val = parse_w(t)
-        if val <= 0:
-            prod = ctx.user_data.get("vp")
-            unit = prod["unit"] if prod else "dona"
-            await upd.message.reply_text(f"❌ Noto'g'ri. {unit} da kiriting:")
-            return S_VOICE_QTY
-        ctx.user_data["vd"]["qty"] = val
-    return await _voice_show_card(upd.message, ctx)
-
 
 # ── TO'LOV ────────────────────────────────────────────────────────────────────
 async def tol_show(upd,ctx):
@@ -1437,10 +902,7 @@ async def his_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
 # ── DO'KONLAR (lokatsiya bilan) ────────────────────────────────────────────────
 async def dok_show(upd,ctx):
-    uid=str(upd.effective_user.id)
-    all_stores=db_get("Dokonlar")
-    print(f"[DEBUG] dok_show uid={uid}, total={len(all_stores)}, dist_ids={[x.get('Dist_ID','') for x in all_stores[:5]]}", flush=True)
-    stores=get_stores(uid)
+    uid=str(upd.effective_user.id); stores=get_stores(uid)
     if upd.callback_query:
         try: await upd.callback_query.edit_message_text("🏪 <b>Do'konlarim</b>",parse_mode="HTML")
         except: pass
@@ -1459,17 +921,13 @@ async def dok_show(upd,ctx):
         ch_mid=str(s.get("Channel_Msg_ID","")).strip()
         if CHANNEL_ID and ch_mid and ch_mid not in ("","0"):
             try:
-                await ctx.bot.forward_message(chat_id=uid,from_chat_id=int(CHANNEL_ID.strip()),message_id=int(ch_mid))
+                await ctx.bot.forward_message(chat_id=uid,from_chat_id=int(CHANNEL_ID),message_id=int(ch_mid))
                 await ctx.bot.send_message(uid,f"☝️ {s.get('Nomi','')}:",reply_markup=kb)
             except Exception as e:
                 logger.error(f"Forward: {e}")
                 await ctx.bot.send_message(uid,card,reply_markup=kb,parse_mode="HTML")
         else:
             await ctx.bot.send_message(uid,card,reply_markup=kb,parse_mode="HTML")
-        lat_v=s.get("Lat",""); lng_v=s.get("Lng","")
-        if lat_v and lng_v:
-            try: await ctx.bot.send_location(int(uid),float(lat_v),float(lng_v))
-            except: pass
     await ctx.bot.send_message(uid,"Yangi do'kon:",reply_markup=ik1(("➕ Qo'shish","dok:add"),("🔙 Orqaga","m:main")))
     return S_MAIN
 
@@ -1479,84 +937,45 @@ async def dok_add_cb(upd,ctx):
 
 async def di_name(upd,ctx):
     ctx.user_data["dn"]=upd.message.text.strip()
-    await upd.message.reply_text("📍 Manzilni kiriting:")
-    return S_DI_ADDR
+    await upd.message.reply_text("📍 Manzil:"); return S_DI_ADDR
 
 async def di_addr(upd,ctx):
     ctx.user_data["da"]=upd.message.text.strip()
-    await upd.message.reply_text(
-        "🏢 MCHJ nomini kiriting (ixtiyoriy):",
-        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:mchj")))
-    return S_DI_MCHJ
+    await upd.message.reply_text("🏢 MCHJ (yoki o'tkazish):",reply_markup=ik1(("⏭","di_skip:mchj"))); return S_DI_MCHJ
 
 async def di_mchj(upd,ctx):
-    if upd.callback_query:
-        await ans(upd.callback_query)
-        ctx.user_data["dm"]=""
-    else:
-        ctx.user_data["dm"]=upd.message.text.strip()
-    await ctx.bot.send_message(
-        upd.effective_user.id,
-        "📞 Tel 1 ni kiriting yoki kontaktni yuboring:",
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("📱 Kontaktni yuborish",request_contact=True)]],
-            resize_keyboard=True, one_time_keyboard=True))
+    if upd.callback_query: await ans(upd.callback_query); ctx.user_data["dm"]=""
+    else: ctx.user_data["dm"]=upd.message.text.strip()
+    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 1:",reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True))
     return S_DI_TEL1
 
 async def di_tel1(upd,ctx):
-    if upd.message.contact:
-        phone = upd.message.contact.phone_number or ""
-    else:
-        phone = clean_phone(upd.message.text or "")
+    phone=upd.message.contact.phone_number if upd.message.contact else clean_phone(upd.message.text)
     if len(phone.replace("+",""))<7:
-        await upd.message.reply_text(
-            "❌ Noto'g'ri raqam. Qaytadan kiriting yoki kontaktni yuboring:",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("📱 Kontaktni yuborish",request_contact=True)]],
-                resize_keyboard=True, one_time_keyboard=True))
-        return S_DI_TEL1
+        await upd.message.reply_text("❌ Noto'g'ri!",reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📱 Yuborish",request_contact=True)]],resize_keyboard=True)); return S_DI_TEL1
     ctx.user_data["dt1"]=phone
-    await upd.message.reply_text("✅ Tel 1 saqlandi.",reply_markup=ReplyKeyboardRemove())
-    await ctx.bot.send_message(
-        upd.effective_user.id,
-        "📞 Tel 2 ni kiriting (ixtiyoriy):",
-        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:tel2")))
-    return S_DI_TEL2
+    await upd.message.reply_text("📞 Tel 2 (yoki o'tkazish):",
+        reply_markup=ReplyKeyboardRemove())
+    await ctx.bot.send_message(upd.effective_user.id,"📞 Tel 2:",reply_markup=ik1(("⏭","di_skip:tel2"))); return S_DI_TEL2
 
 async def di_tel2(upd,ctx):
-    if upd.callback_query:
-        await ans(upd.callback_query)
-        ctx.user_data["dt2"]=""
-    elif upd.message.contact:
-        ctx.user_data["dt2"] = upd.message.contact.phone_number or ""
-    else:
-        ctx.user_data["dt2"] = clean_phone(upd.message.text or "")
-    await ctx.bot.send_message(upd.effective_user.id,"👤 Do'kon egasining ismi:")
-    return S_DI_EGA
+    if upd.callback_query: await ans(upd.callback_query); ctx.user_data["dt2"]=""
+    else: ctx.user_data["dt2"]=clean_phone(upd.message.text)
+    await ctx.bot.send_message(upd.effective_user.id,"👤 Do'kon egasi ismi:"); return S_DI_EGA
 
 async def di_ega(upd,ctx):
     ctx.user_data["de"]=upd.message.text.strip()
-    await upd.message.reply_text(
-        "📸 Do'kon rasmi (ixtiyoriy):",
-        reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:photo")))
-    return S_DI_PHOTO
+    await upd.message.reply_text("📸 Do'kon rasmi (MAJBURIY):"); return S_DI_PHOTO
 
 async def di_photo(upd,ctx):
-    if upd.callback_query:
-        await ans(upd.callback_query)
-        ctx.user_data["dphoto"]=""
-    elif upd.message and upd.message.photo:
-        ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
-    else:
-        await upd.message.reply_text(
-            "📸 Rasm yuboring yoki o'tkazib yuboring:",
-            reply_markup=ik1(("⏭ O'tkazib yuborish","di_skip:photo")))
-        return S_DI_PHOTO
-    await ctx.bot.send_message(
-        upd.effective_user.id,
-        "📍 Lokatsiya yuboring (ixtiyoriy):",
+    if not upd.message.photo:
+        await upd.message.reply_text("❗ Rasm yuboring!"); return S_DI_PHOTO
+    ctx.user_data["dphoto"]=upd.message.photo[-1].file_id
+    # Avval ReplyKeyboard ni o'chir, keyin lokatsiya tugmasi bilan yangi xabar
+    await upd.message.reply_text(
+        "✅ Rasm qabul!\n\n📍 Lokatsiyani yuboring yoki o'tkazib yuboring:",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("📍 Lokatsiya yuborish",request_location=True)],
+            [[KeyboardButton("📍 Lokatsiya yuborish", request_location=True)],
              ["⏭ O'tkazib yuborish"]],
             resize_keyboard=True, one_time_keyboard=True))
     return S_DI_LOC
@@ -1592,30 +1011,21 @@ async def di_loc(upd,ctx):
 
     # Kanalga yuborish va message_id saqlash
     ch_mid=""
-    channel_int = 0
-    if CHANNEL_ID:
-        try:
-            channel_int = int(CHANNEL_ID.strip())
-        except ValueError:
-            logger.error(f"CHANNEL_ID noto'g'ri format: {CHANNEL_ID!r}")
+    channel_int = int(CHANNEL_ID) if CHANNEL_ID else 0
     if channel_int and photo:
         try:
             msg = await ctx.bot.send_photo(channel_int, photo,
                 caption=f"🏪 DO'KON MA'LUMOTI\n\n{card}", parse_mode="HTML")
             ch_mid = str(msg.message_id)
-            logger.info(f"✅ Kanal: {name} | msg_id={ch_mid}")
-            if lat and lng:
-                await ctx.bot.send_location(channel_int, float(lat), float(lng))
+            logger.info(f"Kanal: {name} | msg_id={ch_mid}")
         except Exception as e:
-            logger.error(f"❌ Kanal xato ({CHANNEL_ID}): {type(e).__name__}: {e}")
+            logger.error(f"Kanal xato ({CHANNEL_ID}): {e}")
     elif channel_int and not photo:
-        logger.warning(f"Kanal: rasm yo'q, {name} uchun xabar yuborilmadi")
+        logger.warning(f"Kanal: rasm yo'q, {name}")
     elif not channel_int:
         logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
 
-    db_add("Dokonlar", [
-        str(cnt), name, addr, mchj, tel1, tel2, ega, str(uid), dn, lat, lng, str(ch_mid), now_s()
-    ])
+    db_add("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()])
 
     # Adminga
     for adm in ADMIN_IDS:
@@ -1665,7 +1075,7 @@ async def zak_from_qty(upd,ctx):
         bir=p.get("unit","kg")
     sid=str(s.get("ID","")); sname=s.get("Nomi","")
     dist_id=str(s.get("Dist_ID","")) or uid
-    db_add("Buyurtmalar",[now_s(),sid,sname,dist_id,pn,qty,bir,"Yangi",mk_id("Z")])
+    db_add("Buyurtmalar",[now_s(),sid,sname,dist_id,pn,qty,"Yangi",mk_id("Z")])
     await upd.message.reply_text(f"✅ Zakaz: {sname}\n{pn}: {fmtq(qty,bir,pn,bir=='kg')}",reply_markup=main_kb(uid))
     return S_MAIN
 
@@ -1754,157 +1164,26 @@ async def nar_cost(upd,ctx):
 
 async def nar_d_cost(upd,ctx): return await nar_cost(upd,ctx)
 
-# ── ESLATMA ───────────────────────────────────────────────────────────────────
-def db_update_eslatma(tid, days, sana, izoh):
-    try:
-        w=ws("Topshirish")
-        if not w: return
-        h=w.row_values(1); recs=w.get_all_records()
-        for i,r in enumerate(recs):
-            if str(r.get("Top_ID",""))==tid:
-                rn=i+2
-                for col,val in [("Eslatma_Kun",str(days)),("Eslatma_Sana",sana),("Izoh",izoh)]:
-                    if col in h: w.update_cell(rn,h.index(col)+1,val)
-                return
-    except Exception as e: logger.error(f"db_update_eslatma: {e}")
-
-async def top_eslatma_kun(upd,ctx):
-    t=upd.message.text.strip()
-    try:
-        days=int(t)
-        if not (1<=days<=30): raise ValueError
-    except ValueError:
-        await upd.message.reply_text("❌ 1 dan 30 gacha son kiriting:"); return S_TOP_ESLATMA_KUN
-    ctx.user_data["eslatma_kun"]=days
-    ctx.user_data["eslatma_sana"]=(datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d")
-    await upd.message.reply_text("💬 Izoh qo'shmoqchimisiz?",
-        reply_markup=ikr([("✅ Ha","izoh:ha"),("❌ Yo'q","izoh:yoq")]))
-    return S_TOP_IZOH
-
-async def top_izoh_cb(upd,ctx):
-    q=upd.callback_query; await ans(q)
-    if q.data=="izoh:yoq":
-        tid=ctx.user_data.pop("last_tid","")
-        days=ctx.user_data.pop("eslatma_kun","")
-        sana=ctx.user_data.pop("eslatma_sana","")
-        if tid: db_update_eslatma(tid,days,sana,"")
-        await send_main(upd,ctx); return S_MAIN
-    ctx.user_data["izoh_wait"]=True
-    await q.edit_message_text("💬 Izoh matnini kiriting:")
-    return S_TOP_IZOH
-
-async def top_izoh_text(upd,ctx):
-    if not ctx.user_data.get("izoh_wait"): return S_TOP_IZOH
-    ctx.user_data.pop("izoh_wait",None)
-    izoh=upd.message.text.strip()
-    tid=ctx.user_data.pop("last_tid","")
-    days=ctx.user_data.pop("eslatma_kun","")
-    sana=ctx.user_data.pop("eslatma_sana","")
-    if tid: db_update_eslatma(tid,days,sana,izoh)
-    await send_main(upd,ctx); return S_MAIN
-
-
-# ── SAVAT ──────────────────────────────────────────────────────────────────────
-async def savat_show(upd,ctx):
-    uid=str(upd.effective_user.id)
-    my_sids={str(s.get("ID","")) for s in get_stores(uid)}
-    orders=[r for r in db_get("Buyurtmalar")
-            if (str(r.get("Dist_ID",""))==uid or str(r.get("Dokon_ID","")) in my_sids)
-            and r.get("Status","")=="Yangi"]
-    if not orders:
-        await esend(upd,ctx,"🛒 Savat bo'sh!",back()); return S_MAIN
-    by_prod={}; by_store={}
-    for r in orders:
-        pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0)
-        dk=r.get("Dokon","?"); unit=r.get("Birlik","dona")
-        bp=by_prod.setdefault(pn,{"qty":0,"unit":unit,"stores":set()})
-        bp["qty"]+=qty; bp["stores"].add(dk)
-        by_store.setdefault(dk,[]).append(f"{pn} {fmtq(qty,unit,pn,False)}")
-    lines=["🛒 <b>Savat — Jami zakaz</b>","━━━━━━━━━━━━━━━━","📦 <b>Mahsulotlar:</b>"]
-    for pn,d in by_prod.items():
-        lines.append(f"• {pn}: {fmtq(d['qty'],d['unit'],pn,False)} ({len(d['stores'])} do'kon)")
-    lines+=["","🏪 <b>Do'konlar:</b>"]
-    for dk,items in by_store.items(): lines.append(f"• {dk}: {', '.join(items)}")
-    await esend(upd,ctx,"\n".join(lines),
-        ikr([("📅 Sana tanlash","savat:send")],[("🔙 Orqaga","m:main")])); return S_MAIN
-
-async def savat_send_cb(upd,ctx):
-    q=upd.callback_query; await ans(q)
-    ertaga=(datetime.now()+timedelta(days=1)).strftime("%d.%m.%Y")
-    await q.edit_message_text("📅 Qachon kerak?",
-        reply_markup=ikr([(f"Ertaga ({ertaga})",f"sdate:{ertaga}"),("Boshqa kun","sdate:other")]))
-    return S_SAVAT_SANA
-
-async def savat_date_cb(upd,ctx):
-    q=upd.callback_query; await ans(q)
-    d=q.data.split(":",1)[1]
-    if d=="other":
-        await q.edit_message_text("📅 Sanani kiriting (format: 15.05.2026):")
-        return S_SAVAT_SANA
-    await _savat_finish(upd,ctx,d); return S_MAIN
-
-async def savat_sana_text(upd,ctx):
-    t=upd.message.text.strip()
-    if not re.match(r'^\d{2}\.\d{2}\.\d{4}$',t):
-        await upd.message.reply_text("❌ Format: 15.05.2026"); return S_SAVAT_SANA
-    await _savat_finish(upd,ctx,t); return S_MAIN
-
-async def _savat_finish(upd,ctx,sana):
-    uid=str(upd.effective_user.id)
-    u=get_user(uid); dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() if u else uid
-    sid=u.get("Short_ID","?") if u else uid
-    my_sids={str(s.get("ID","")) for s in get_stores(uid)}
-    orders=[r for r in db_get("Buyurtmalar")
-            if (str(r.get("Dist_ID",""))==uid or str(r.get("Dokon_ID","")) in my_sids)
-            and r.get("Status","")=="Yangi"]
-    by_prod={}; zakaz_ids=[]
-    for r in orders:
-        pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0); unit=r.get("Birlik","dona")
-        bp=by_prod.setdefault(pn,{"qty":0,"unit":unit}); bp["qty"]+=qty
-        if r.get("Zakaz_ID",""): zakaz_ids.append(r["Zakaz_ID"])
-    lines=[f"🛒 <b>ZAKAZ (Zavod uchun)</b>",f"📅 Kerak sanasi: {sana}","━━━━━━━━━━━━━━━━"]
-    for pn,d in by_prod.items(): lines.append(f"• {pn}: {fmtq(d['qty'],d['unit'],pn,False)}")
-    lines+=[f"━━━━━━━━━━━━━━━━",f"🚚 Dist: {dn} (ID: {sid})"]
-    msg="\n".join(lines)
-    ctx.user_data["savat_sana"]=sana; ctx.user_data["savat_msg"]=msg; ctx.user_data["savat_zids"]=",".join(zakaz_ids)
-    preview=msg+"\n\n❓ Zakazni zavodga yuborasizmi?"
-    kb=ikr([("🚀 Zavodga yuborish","savat:confirm")],[("🔙 Orqaga","m:savat")])
-    if upd.callback_query:
-        try: await upd.callback_query.edit_message_text(preview,reply_markup=kb,parse_mode="HTML")
-        except: await ctx.bot.send_message(uid,preview,reply_markup=kb,parse_mode="HTML")
-    else:
-        await upd.message.reply_text(preview,reply_markup=kb,parse_mode="HTML")
-
-async def savat_confirm_cb(upd,ctx):
-    q=upd.callback_query; await ans(q); uid=str(upd.effective_user.id)
-    sana=ctx.user_data.get("savat_sana","?"); msg=ctx.user_data.get("savat_msg","")
-    zids=ctx.user_data.get("savat_zids","")
-    db_add("Savat",[now_s(),uid,zids,sana,"yuborildi",mk_id("SAV")])
-    for adm in ADMIN_IDS:
-        try: await ctx.bot.send_message(adm,msg,parse_mode="HTML")
-        except: pass
-    try: await q.edit_message_text("✅ Zavod zakazingiz yuborildi!",parse_mode="HTML")
-    except: pass
-    await send_main(upd,ctx)
-
-
 # ── ADMIN PANEL ───────────────────────────────────────────────────────────────
 async def adm_menu(upd,ctx):
     uid=upd.effective_user.id
     if uid not in ADMIN_IDS: await esend(upd,ctx,"🚫 Ruxsat yo'q!"); return S_MAIN
+    namoz_stat="✅ Yoq" if get_set("namoz","1")=="1" else "❌ O'chiq"
     await esend(upd,ctx,"⚙️ <b>Admin</b>",
         ikr([("➕ Mahsulot","adm:prod")],[("💰 Narxlar","adm:price")],
             [("🏪 Do'kon qo'sh","adm:dk")],[("🚚 Distribyutor","adm:dist")],
             [("📊 Statistika","adm:stats"),("💸 Qarzdorlar","adm:debt")],
             [("🏪 Do'konlar","adm:dks"),("🚚 Distlar","adm:dists")],
             [("📦 Zavod","adm:zav")],[("📢 Xabar","adm:bc")],
-            [("📋 Buyurtmalar","adm:buyurtmalar")],[("🔙 Orqaga","m:main")])); return S_MAIN
+            [(f"🕌 Namoz: {namoz_stat}","adm:namoz")],[("🔙 Orqaga","m:main")])); return S_MAIN
 
 async def adm_cb(upd,ctx):
     q=upd.callback_query; await ans(q); uid=upd.effective_user.id; l=la(ctx)
     if uid not in ADMIN_IDS: return S_MAIN
     d=q.data.split(":")[1]
-    if d=="buyurtmalar": return await adm_buyurtmalar(upd,ctx)
+    if d=="namoz":
+        nv="0" if get_set("namoz","1")=="1" else "1"
+        put_set("namoz",nv); await q.answer("✅ Yangilandi!"); return await adm_menu(upd,ctx)
     if d=="prod": await q.edit_message_text("Nom (UZ):",reply_markup=back("m:adm")); return S_ADM_PROD_UZ
     if d=="price":
         await q.edit_message_text("Mahsulot:",reply_markup=prod_kb(get_prods(),l,"adm_narx","m:adm")); return S_MAIN
@@ -2026,30 +1305,6 @@ async def adm_zav(upd,ctx):
     await ctx.bot.send_message(upd.effective_user.id,"⬆️",reply_markup=back("m:adm")); return S_MAIN
 
 
-async def adm_buyurtmalar(upd,ctx):
-    q=upd.callback_query
-    orders=[r for r in db_get("Buyurtmalar") if r.get("Status","")=="Yangi"]
-    if not orders:
-        await q.edit_message_text("📋 Yangi zakaz yo'q.",reply_markup=back("m:adm")); return S_MAIN
-    dist_map={}
-    for r in orders:
-        did=str(r.get("Dist_ID","")); dk=r.get("Dokon","?")
-        pn=r.get("Mahsulot",""); qty=float(r.get("Miqdor",0) or 0); unit=r.get("Birlik","dona")
-        dist_map.setdefault(did,{}).setdefault(dk,[]).append(f"{pn}: {fmtq(qty,unit,pn,False)}")
-    users_map={str(u.get("TG_ID","")):u for u in db_get("Foydalanuvchilar")}
-    lines=["📋 <b>Barcha buyurtmalar</b>","━━━━━━━━━━━━━━━━"]
-    for did,dokonlar in dist_map.items():
-        u=users_map.get(did,{})
-        dn=f"{u.get('Ism','')} {u.get('Familiya','')}".strip() or did
-        lines.append(f"\n🚚 <b>{dn}:</b>")
-        for dk,items in dokonlar.items():
-            lines.append(f"  🏪 {dk}:")
-            for item in items: lines.append(f"    • {item}")
-    uid=upd.effective_user.id; text="\n".join(lines)
-    for i in range(0,len(text),3500): await ctx.bot.send_message(uid,text[i:i+3500],parse_mode="HTML")
-    await ctx.bot.send_message(uid,"⬆️",reply_markup=back("m:adm")); return S_MAIN
-
-
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 async def job_qarz(ctx:ContextTypes.DEFAULT_TYPE):
     for u in db_get("Foydalanuvchilar"):
@@ -2123,31 +1378,13 @@ async def job_5kun(ctx:ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML")
         except Exception as e: logger.error(f"job_5kun: {e}")
 
-async def job_eslatma(ctx:ContextTypes.DEFAULT_TYPE):
-    today=today_s(); tops=db_get("Topshirish"); stores=db_get("Dokonlar")
-    for r in tops:
-        if str(r.get("Eslatma_Sana",""))[:10]!=today: continue
-        if r.get("Status","")!="tasdiqlangan": continue
-        did=str(r.get("Dist_ID","")); dkid=str(r.get("Dokon_ID",""))
-        if not did: continue
-        s=next((x for x in stores if str(x.get("ID",""))==dkid),None)
-        ega=s.get("Ega","—") if s else "—"; tel=s.get("Tel1","—") if s else "—"
-        qarz=get_debt(dkid); izoh=r.get("Izoh","") or "—"
-        msg=(f"📋 <b>ESLATMA: {r.get('Dokon','')}</b>\n━━━━━━━━━━━━━━━━\n"
-             f"👤 Ega: {ega}\n📞 Tel: {tel}\n📅 Tovar berilgan: {str(r.get('Sana',''))[:10]}\n"
-             f"💸 Qarz: {qarz:,.0f} so'm\n💬 Izoh: {izoh}\n━━━━━━━━━━━━━━━━\nDo'kon bilan bog'laning!")
-        try: await ctx.bot.send_message(int(did),msg,parse_mode="HTML")
-        except Exception as e: logger.error(f"job_eslatma: {e}")
-
-
 # ── MAIN ───────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN: print("BOT_TOKEN yo'q!"); return
     app=Application.builder().token(BOT_TOKEN).build()
-    app.job_queue.run_daily(job_qarz,     time=dtime(9,0))
-    app.job_queue.run_daily(job_eslatma,  time=dtime(9,5))
-    app.job_queue.run_daily(job_zakaz,    time=dtime(20,0))
-    app.job_queue.run_daily(job_5kun,     time=dtime(10,0))
+    app.job_queue.run_daily(job_qarz,  time=dtime(9,0))
+    app.job_queue.run_daily(job_zakaz, time=dtime(20,0))
+    app.job_queue.run_daily(job_5kun,  time=dtime(10,0))
     app.job_queue.run_repeating(job_24h, interval=3600, first=60)
 
     # /start komandani Telegram da ko'rsatish (klaviaturada / bossalar chiqadi)
@@ -2160,34 +1397,6 @@ def main():
             logger.info("Commands set OK")
         except Exception as e:
             logger.error(f"set_my_commands: {e}")
-
-        # Barcha kerakli sheet tablarni yaratish (yo'q bo'lsa)
-        try:
-            for tab_name in HEADERS:
-                w = ws(tab_name)
-                if w:
-                    row1 = w.row_values(1)
-                    if not row1:
-                        w.append_row(HEADERS[tab_name])
-                        logger.info(f"✅ Sheet headers qoshildi: {tab_name}")
-                    else:
-                        logger.info(f"✅ Sheet mavjud: {tab_name} ({len(row1)} ustun)")
-        except Exception as e:
-            logger.error(f"Sheet init xato: {e}")
-
-        # Kanal ulanishini tekshirish
-        if CHANNEL_ID:
-            try:
-                channel_int = int(CHANNEL_ID.strip())
-                chat = await application.bot.get_chat(channel_int)
-                logger.info(f"✅ Kanal topildi: {chat.title} (id={channel_int})")
-                msg = await application.bot.send_message(channel_int, "✅ Bot ulandi!")
-                logger.info(f"✅ Test xabar yuborildi: msg_id={msg.message_id}")
-                await application.bot.delete_message(channel_int, msg.message_id)
-            except Exception as e:
-                logger.error(f"❌ Kanal xato ({CHANNEL_ID}): {type(e).__name__}: {e}")
-        else:
-            logger.warning("CHANNEL_ID o'rnatilmagan — kanal test o'tkazilmadi")
     app.post_init = post_init
 
     txt=filters.TEXT&~filters.COMMAND
@@ -2227,9 +1436,6 @@ def main():
                 CallbackQueryHandler(adm_cb,       pattern="^adm:"),
                 CallbackQueryHandler(adm_narx_p_cb,pattern="^adm_narx:"),
                 CallbackQueryHandler(adm_unit_cb,  pattern="^unit:"),
-                CallbackQueryHandler(savat_send_cb,pattern="^savat:send$"),
-                CallbackQueryHandler(savat_confirm_cb,pattern="^savat:confirm$"),
-                MessageHandler(filters.VOICE, voice_handler),
                 MessageHandler(txt,lambda u,c: S_MAIN),
             ],
             S_ZAV_QTY:      [MessageHandler(txt,zav_qty)],
@@ -2244,7 +1450,7 @@ def main():
             S_DI_TEL1:      [MessageHandler(ctxt,di_tel1)],
             S_DI_TEL2:      [MessageHandler(ctxt,di_tel2),CallbackQueryHandler(di_tel2,pattern="^di_skip:tel2$")],
             S_DI_EGA:       [MessageHandler(txt,di_ega)],
-            S_DI_PHOTO:     [MessageHandler(ptxt,di_photo),CallbackQueryHandler(di_photo,pattern="^di_skip:photo$")],
+            S_DI_PHOTO:     [MessageHandler(ptxt,di_photo)],
             S_DI_LOC: [
                 MessageHandler(filters.LOCATION, di_loc),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, di_loc),
@@ -2267,18 +1473,6 @@ def main():
             S_ADM_DIST_TG:  [MessageHandler(txt,adm_dist_tg)],
             S_ADM_BC:       [MessageHandler(txt,adm_bc)],
             S_TOLOV_SUMMA:  [MessageHandler(txt,tol_summa),CallbackQueryHandler(tol_full_cb,pattern="^tol_full:"),CallbackQueryHandler(tol_show,pattern="^m:tol$")],
-            S_TOP_ESLATMA_KUN: [MessageHandler(txt,top_eslatma_kun)],
-            S_TOP_IZOH:     [CallbackQueryHandler(top_izoh_cb,pattern="^izoh:"),MessageHandler(txt,top_izoh_text)],
-            S_SAVAT_SANA:   [CallbackQueryHandler(savat_date_cb,pattern="^sdate:"),MessageHandler(txt,savat_sana_text)],
-            S_VOICE_CONFIRM:[
-                CallbackQueryHandler(voice_cb, pattern="^(vok|vc|vs:|vp:|vpt:)"),
-                MessageHandler(filters.VOICE, voice_handler),
-            ],
-            S_VOICE_QTY:    [
-                MessageHandler(txt, voice_qty_text),
-                CallbackQueryHandler(voice_cb, pattern="^vc$"),
-                MessageHandler(filters.VOICE, voice_handler),
-            ],
         },
         fallbacks=[CommandHandler("start",start),CommandHandler("cancel",start)],
         allow_reentry=True,
@@ -2290,7 +1484,7 @@ def main():
         (r'^/vok_\w+$',vok_cmd),(r'^/vrad_\w+$',vrad_cmd),
     ]: app.add_handler(MessageHandler(filters.Regex(pat),h))
     app.add_handler(conv)
-    print("Alba Milk Bot v5.2 🎤 ✅")
+    print("Alba Milk Bot v5.0 ✅")
     app.run_polling(drop_pending_updates=True)
 
 if __name__=="__main__":
