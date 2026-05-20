@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Alba Milk Distribution Bot
-Complete working version
+ALBA MILK DISTRIBUTION BOT - TO'LIQ VERSIYA
+Complete production-ready version with all features
 """
 
 import os
@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, date
-from typing import Optional
+from typing import Optional, List, Dict
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -44,7 +44,7 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
 
 if not all([BOT_TOKEN, SPREADSHEET_ID, GOOGLE_CREDS_JSON]):
-    raise ValueError("Missing required environment variables")
+    raise ValueError("❌ Missing required environment variables")
 
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
@@ -64,14 +64,14 @@ def get_sheets_client():
         client = gspread.authorize(credentials)
         return client
     except Exception as e:
-        logger.error(f"Failed to initialize Sheets client: {e}")
+        logger.error(f"Failed to initialize Sheets: {e}")
         raise
 
 gc = get_sheets_client()
 sh = gc.open_by_key(SPREADSHEET_ID)
 
 # ═══════════════════════════════════════════════════════════
-# HELPER FUNCTIONS
+# DATABASE HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
 def db_add(sheet_name: str, row_data: list) -> bool:
@@ -79,7 +79,7 @@ def db_add(sheet_name: str, row_data: list) -> bool:
     try:
         ws = sh.worksheet(sheet_name)
         ws.append_row(row_data, value_input_option='USER_ENTERED')
-        logger.info(f"✅ Added row to {sheet_name}")
+        logger.info(f"✅ Row added to {sheet_name}")
         return True
     except Exception as e:
         logger.error(f"❌ db_add failed for {sheet_name}: {e}")
@@ -95,42 +95,83 @@ def db_get_all(sheet_name: str) -> list:
         logger.error(f"❌ db_get_all failed for {sheet_name}: {e}")
         return []
 
-def db_update_row(sheet_name: str, row_num: int, col_num: int, value) -> bool:
+def db_update_cell(sheet_name: str, row_num: int, col_num: int, value) -> bool:
     """Update specific cell"""
     try:
         ws = sh.worksheet(sheet_name)
         ws.update_cell(row_num, col_num, value)
         return True
     except Exception as e:
-        logger.error(f"❌ db_update_row failed: {e}")
+        logger.error(f"❌ db_update_cell failed: {e}")
         return False
 
+def db_find_row(sheet_name: str, conditions: dict) -> tuple:
+    """Find row by conditions, returns (row_index, row_data) or (None, None)"""
+    try:
+        records = db_get_all(sheet_name)
+        for idx, record in enumerate(records):
+            match = all(str(record.get(k)) == str(v) for k, v in conditions.items())
+            if match:
+                return idx + 2, record  # +2 because header is row 1, data starts at row 2
+        return None, None
+    except Exception as e:
+        logger.error(f"❌ db_find_row failed: {e}")
+        return None, None
+
+# ═══════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
 def generate_id(prefix: str) -> str:
-    """Generate unique ID"""
+    """Generate unique ID with timestamp"""
     return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 def clean_phone(phone: str) -> str:
-    """Extract digits from phone"""
+    """Extract digits from phone number"""
     return re.sub(r'\D', '', phone)
 
 def format_number(num) -> str:
-    """Format number with separators"""
+    """Format number with thousand separators"""
     try:
         return f"{int(num):,}"
     except:
         return str(num)
 
-def get_factory_price(mahsulot_id: str) -> int:
-    """Get factory price"""
+def get_product_by_id(product_id: str) -> Optional[dict]:
+    """Get product by ID"""
     products = db_get_all("Mahsulotlar_Asosiy")
     for p in products:
-        if p.get('ID') == mahsulot_id:
-            return int(p.get('Zavod_Narxi', 0))
+        if p.get('ID') == product_id:
+            return p
+    return None
+
+def get_shop_by_id(shop_id: str) -> Optional[dict]:
+    """Get shop by ID"""
+    shops = db_get_all("Dokonlar")
+    for s in shops:
+        if s.get('ID') == shop_id:
+            return s
+    return None
+
+# ═══════════════════════════════════════════════════════════
+# PRICE MANAGEMENT FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
+def get_factory_price(mahsulot_id: str) -> int:
+    """Get factory price for product"""
+    product = get_product_by_id(mahsulot_id)
+    if product:
+        return int(product.get('Zavod_Narxi', 0))
     return 0
 
 def get_selling_price(dist_id: str, dokon_id: str, mahsulot_id: str) -> int:
-    """Get selling price (3-tier)"""
-    # 1. Custom price
+    """
+    Get selling price with 3-tier priority:
+    1. Shop-specific custom price
+    2. Distributor's default price
+    3. Admin's suggested price
+    """
+    # 1. Check custom price for this shop
     custom_prices = db_get_all("Mahsulotlar_Maxsus_Narx")
     for cp in custom_prices:
         if (str(cp.get('Dist_ID')) == str(dist_id) and 
@@ -138,23 +179,22 @@ def get_selling_price(dist_id: str, dokon_id: str, mahsulot_id: str) -> int:
             str(cp.get('Mahsulot_ID')) == str(mahsulot_id)):
             return int(cp.get('Sotish_Narxi', 0))
     
-    # 2. Distributor default
+    # 2. Check distributor default price
     dist_defaults = db_get_all("Mahsulotlar_Dist_Default")
     for dd in dist_defaults:
         if (str(dd.get('Dist_ID')) == str(dist_id) and 
             str(dd.get('Mahsulot_ID')) == str(mahsulot_id)):
             return int(dd.get('Sotish_Narxi', 0))
     
-    # 3. Admin default
-    products = db_get_all("Mahsulotlar_Asosiy")
-    for p in products:
-        if p.get('ID') == mahsulot_id:
-            return int(p.get('Sotish_Narxi_Default', 0))
+    # 3. Fallback to admin default
+    product = get_product_by_id(mahsulot_id)
+    if product:
+        return int(product.get('Sotish_Narxi_Default', 0))
     
     return 0
 
 def has_custom_price(dist_id: str, dokon_id: str, mahsulot_id: str) -> bool:
-    """Check if custom price exists"""
+    """Check if shop has custom price"""
     custom_prices = db_get_all("Mahsulotlar_Maxsus_Narx")
     for cp in custom_prices:
         if (str(cp.get('Dist_ID')) == str(dist_id) and 
@@ -163,240 +203,342 @@ def has_custom_price(dist_id: str, dokon_id: str, mahsulot_id: str) -> bool:
             return True
     return False
 
-def update_ombor(dist_id, mahsulot_id, nomi, turi, miqdor, birlik, operation='add'):
-    """Update warehouse stock"""
+def update_ombor(dist_id: str, mahsulot_id: str, nomi: str, turi: str, miqdor: float, birlik: str, operation: str = 'add'):
+    """Update warehouse stock (add or subtract)"""
     try:
-        ombor = db_get_all("Ombor")
-        found = False
+        row_num, existing = db_find_row("Ombor", {
+            'Dist_ID': dist_id,
+            'Mahsulot': nomi,
+            'Turi': turi
+        })
         
-        for idx, item in enumerate(ombor):
-            if (str(item.get('Dist_ID')) == str(dist_id) and 
-                item.get('Mahsulot') == nomi and 
-                item.get('Turi') == turi):
-                found = True
-                current = float(item.get('Miqdor', 0))
-                if operation == 'add':
-                    new_amount = current + float(miqdor)
-                else:
-                    new_amount = current - float(miqdor)
-                
-                db_update_row("Ombor", idx + 2, 4, new_amount)
-                break
-        
-        if not found:
+        if row_num:
+            # Update existing row
+            current = float(existing.get('Miqdor', 0))
+            if operation == 'add':
+                new_amount = current + float(miqdor)
+            else:  # subtract
+                new_amount = current - float(miqdor)
+            
+            db_update_cell("Ombor", row_num, 4, new_amount)  # Column 4 is Miqdor
+            logger.info(f"✅ Ombor updated: {nomi} {turi} -> {new_amount}")
+        else:
+            # Add new row
             row = [str(dist_id), nomi, turi, miqdor, birlik]
             db_add("Ombor", row)
+            logger.info(f"✅ Ombor added: {nomi} {turi} = {miqdor}")
     except Exception as e:
-        logger.error(f"update_ombor failed: {e}")
+        logger.error(f"❌ update_ombor failed: {e}")
 
 # ═══════════════════════════════════════════════════════════
 # CONVERSATION STATES
 # ═══════════════════════════════════════════════════════════
-S_DI_NM, S_DI_ADR, S_DI_MCHJ, S_DI_TEL1, S_DI_TEL2, S_DI_EG, S_DI_PHT, S_DI_LOC = range(8)
+
+# Shop registration
+(S_SHOP_NAME, S_SHOP_ADDRESS, S_SHOP_MCHJ, S_SHOP_TEL1, 
+ S_SHOP_TEL2, S_SHOP_OWNER, S_SHOP_PHOTO, S_SHOP_LOCATION) = range(8)
+
+# Factory receipt
 S_QABUL_PRODUCT, S_QABUL_AMOUNT, S_QABUL_MORE = range(8, 11)
+
+# Order
 S_ORDER_SHOP, S_ORDER_PRODUCT, S_ORDER_AMOUNT, S_ORDER_MORE = range(11, 15)
+
+# Delivery
+(S_DELIVERY_SHOP, S_DELIVERY_PRODUCT_INPUT, S_DELIVERY_VOZVRAT_CHOICE,
+ S_DELIVERY_VOZVRAT_AMOUNT, S_DELIVERY_NEXT_PRODUCT, S_DELIVERY_IZOH_CHOICE,
+ S_DELIVERY_IZOH_TEXT, S_DELIVERY_ESLATMA_KUN, S_DELIVERY_TOLOV,
+ S_DELIVERY_NAQD, S_DELIVERY_TAROZI) = range(15, 26)
+
+# Price management
+(S_PRICE_MENU, S_PRICE_SELECT_PRODUCT, S_PRICE_ENTER_DEFAULT,
+ S_PRICE_CUSTOM_SELECT_SHOPS, S_PRICE_CUSTOM_ENTER) = range(26, 31)
 
 # ═══════════════════════════════════════════════════════════
 # START & MAIN MENU
 # ═══════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
+    """Start command - show main menu"""
     user_id = update.effective_user.id
     user_name = update.effective_user.full_name
     
-    keyboard = [
-        ["🏪 Do'konlarim", "➕ Do'kon qo'shish"],
-        ["📦 Zavoddan qabul", "📋 Buyurtmalar"],
-        ["📊 Hisobotlar", "🏦 Ombor"]
+    buttons = [
+        [InlineKeyboardButton("🏪 Do'konlarim", callback_data="menu_shops")],
+        [InlineKeyboardButton("➕ Do'kon qo'shish", callback_data="menu_add_shop")],
+        [InlineKeyboardButton("📦 Zavoddan qabul", callback_data="menu_qabul")],
+        [InlineKeyboardButton("📋 Buyurtmalar", callback_data="menu_orders")],
+        [InlineKeyboardButton("💰 Narxlarim", callback_data="menu_prices")],
+        [InlineKeyboardButton("📊 Hisobotlar", callback_data="menu_reports")],
+        [InlineKeyboardButton("🏦 Ombor", callback_data="menu_ombor")]
     ]
     
     if user_id in ADMIN_IDS:
-        keyboard.append(["👨‍💼 Admin"])
-    
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        buttons.append([InlineKeyboardButton("👨‍💼 Admin Panel", callback_data="menu_admin")])
     
     await update.message.reply_text(
         f"Assalomu alaykum, {user_name}!\n\n"
         "Alba Milk botiga xush kelibsiz.",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle main menu"""
-    text = update.message.text
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show main menu (for callbacks)"""
+    query = update.callback_query
+    if query:
+        await query.answer()
     
-    if text == "🏪 Do'konlarim":
-        await show_shops(update, context)
-    elif text == "➕ Do'kon qo'shish":
-        return await dokon_start(update, context)
-    elif text == "📦 Zavoddan qabul":
-        return await qabul_start(update, context)
-    elif text == "📋 Buyurtmalar":
-        return await buyurtma_menu(update, context)
-    elif text == "📊 Hisobotlar":
-        await hisobotlar_menu(update, context)
-    elif text == "🏦 Ombor":
-        await show_ombor(update, context)
+    user_id = update.effective_user.id
     
-    return ConversationHandler.END
+    buttons = [
+        [InlineKeyboardButton("🏪 Do'konlarim", callback_data="menu_shops")],
+        [InlineKeyboardButton("➕ Do'kon qo'shish", callback_data="menu_add_shop")],
+        [InlineKeyboardButton("📦 Zavoddan qabul", callback_data="menu_qabul")],
+        [InlineKeyboardButton("📋 Buyurtmalar", callback_data="menu_orders")],
+        [InlineKeyboardButton("💰 Narxlarim", callback_data="menu_prices")],
+        [InlineKeyboardButton("📊 Hisobotlar", callback_data="menu_reports")],
+        [InlineKeyboardButton("🏦 Ombor", callback_data="menu_ombor")]
+    ]
+    
+    if user_id in ADMIN_IDS:
+        buttons.append([InlineKeyboardButton("👨‍💼 Admin Panel", callback_data="menu_admin")])
+    
+    if query:
+        await query.edit_message_text(
+            "🏠 Asosiy menyu",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    else:
+        await update.message.reply_text(
+            "🏠 Asosiy menyu",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
-async def show_shops(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's shops"""
+# ═══════════════════════════════════════════════════════════
+# SHOP LIST WITH PHOTOS & LOCATIONS
+# ═══════════════════════════════════════════════════════════
+
+async def show_shops_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's shops with photos and locations"""
+    query = update.callback_query
+    await query.answer()
+    
     user_id = update.effective_user.id
     shops = db_get_all("Dokonlar")
     
     my_shops = [s for s in shops if str(s.get('Dist_ID')) == str(user_id)]
     
     if not my_shops:
-        await update.message.reply_text("Sizda do'konlar yo'q.\n\n➕ Do'kon qo'shish")
+        buttons = [
+            [InlineKeyboardButton("➕ Do'kon qo'shish", callback_data="menu_add_shop")],
+            [InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]
+        ]
+        await query.edit_message_text(
+            "Sizda hali do'konlar yo'q.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
     
-    msg = "🏪 Mening do'konlarim:\n\n"
-    for shop in my_shops:
-        msg += f"📍 {shop.get('Nomi')}\n"
-        msg += f"   {shop.get('Adres')}\n"
-        msg += f"   📞 {shop.get('Tel1')}\n\n"
+    await query.edit_message_text("📥 Do'konlar yuklanmoqda...")
     
-    await update.message.reply_text(msg)
+    # Send each shop with photo and location
+    for shop in my_shops:
+        caption = (
+            f"📍 {shop.get('Nomi')}\n"
+            f"📫 {shop.get('Adres')}\n"
+            f"📞 {shop.get('Tel1')}\n"
+            f"👤 {shop.get('Sotuvchi')}"
+        )
+        
+        # Try to get photo from channel message
+        channel_msg_id = shop.get('Channel_Msg_ID')
+        if channel_msg_id and CHANNEL_ID:
+            try:
+                # Forward photo from channel
+                msg = await context.bot.forward_message(
+                    chat_id=user_id,
+                    from_chat_id=CHANNEL_ID,
+                    message_id=int(channel_msg_id)
+                )
+            except Exception as e:
+                logger.error(f"Failed to forward photo: {e}")
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=caption
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=caption
+            )
+        
+        # Send location
+        lat = shop.get('Lat')
+        lng = shop.get('Lng')
+        if lat and lng:
+            try:
+                await context.bot.send_location(
+                    chat_id=user_id,
+                    latitude=float(lat),
+                    longitude=float(lng)
+                )
+            except Exception as e:
+                logger.error(f"Failed to send location: {e}")
+    
+    # Show menu button
+    buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="✅ Barcha do'konlar ko'rsatildi",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 # ═══════════════════════════════════════════════════════════
 # SHOP REGISTRATION
 # ═══════════════════════════════════════════════════════════
 
-async def dokon_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def shop_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start shop registration"""
-    await update.message.reply_text(
-        "Do'kon qo'shish\n\n"
-        "Do'kon nomini kiriting:",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return S_DI_NM
-
-async def di_nm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get shop name"""
-    context.user_data['dokon_nom'] = update.message.text
-    await update.message.reply_text("📍 Manzilni kiriting:")
-    return S_DI_ADR
-
-async def di_adr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get address"""
-    context.user_data['dokon_adres'] = update.message.text
+    query = update.callback_query
+    await query.answer()
     
-    keyboard = [["O'tkazib yuborish"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await query.edit_message_text(
+        "📝 Do'kon qo'shish\n\n"
+        "Do'kon nomini kiriting:"
+    )
+    return S_SHOP_NAME
+
+async def shop_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get shop name"""
+    context.user_data['shop_name'] = update.message.text
+    
+    await update.message.reply_text("📍 Manzilni kiriting:")
+    return S_SHOP_ADDRESS
+
+async def shop_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get shop address"""
+    context.user_data['shop_address'] = update.message.text
+    
+    buttons = [[InlineKeyboardButton("⏭ O'tkazib yuborish", callback_data="shop_skip_mchj")]]
     
     await update.message.reply_text(
         "🏢 MCHJ nomini kiriting (yoki skip):",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
-    return S_DI_MCHJ
+    return S_SHOP_MCHJ
 
-async def di_mchj(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get MCHJ"""
-    text = update.message.text
-    context.user_data['dokon_mchj'] = "" if text == "O'tkazib yuborish" else text
-    
-    await update.message.reply_text(
-        "📞 Tel 1 raqamini kiriting:\n\n"
-        "Format: 998901234567",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return S_DI_TEL1
+async def shop_mchj(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get MCHJ or skip"""
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shop_mchj'] = ""
+        await query.edit_message_text(
+            "📞 Tel 1 raqamini kiriting:\n\n"
+            "Format: 998901234567"
+        )
+    else:
+        context.user_data['shop_mchj'] = update.message.text
+        await update.message.reply_text(
+            "📞 Tel 1 raqamini kiriting:\n\n"
+            "Format: 998901234567"
+        )
+    return S_SHOP_TEL1
 
-async def di_tel1(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get Tel1"""
+async def shop_tel1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get Tel1 - MANDATORY, numbers only"""
     text = update.message.text
     phone = clean_phone(text)
     
     if not re.match(r'^998\d{9}$', phone):
         await update.message.reply_text(
-            "❌ Faqat raqam kiriting (998901234567 formatida)"
+            "❌ Noto'g'ri format!\n\n"
+            "Faqat raqam kiriting: 998901234567"
         )
-        return S_DI_TEL1
+        return S_SHOP_TEL1
     
-    context.user_data['dokon_tel1'] = phone
+    context.user_data['shop_tel1'] = phone
     
-    keyboard = [["O'tkazib yuborish"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    buttons = [[InlineKeyboardButton("⏭ O'tkazib yuborish", callback_data="shop_skip_tel2")]]
     
     await update.message.reply_text(
-        "📞 Tel 2 (yoki skip):",
-        reply_markup=reply_markup
+        "📞 Tel 2 raqamini kiriting (yoki skip):",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
-    return S_DI_TEL2
+    return S_SHOP_TEL2
 
-async def di_tel2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get Tel2"""
-    text = update.message.text
-    
-    if text == "O'tkazib yuborish":
-        context.user_data['dokon_tel2'] = ""
+async def shop_tel2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get Tel2 or skip"""
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shop_tel2'] = ""
+        await query.edit_message_text("👤 Sotuvchi ismini kiriting:")
     else:
-        phone = clean_phone(text)
+        phone = clean_phone(update.message.text)
         if not re.match(r'^998\d{9}$', phone):
-            keyboard = [["O'tkazib yuborish"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            buttons = [[InlineKeyboardButton("⏭ O'tkazib yuborish", callback_data="shop_skip_tel2")]]
             await update.message.reply_text(
-                "❌ Faqat raqam yoki skip:",
-                reply_markup=reply_markup
+                "❌ Noto'g'ri format! Qaytadan kiriting yoki skip:",
+                reply_markup=InlineKeyboardMarkup(buttons)
             )
-            return S_DI_TEL2
-        context.user_data['dokon_tel2'] = phone
-    
-    await update.message.reply_text(
-        "👤 Sotuvchi ismini kiriting:",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return S_DI_EG
+            return S_SHOP_TEL2
+        context.user_data['shop_tel2'] = phone
+        await update.message.reply_text("👤 Sotuvchi ismini kiriting:")
+    return S_SHOP_OWNER
 
-async def di_eg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def shop_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get owner name"""
-    context.user_data['dokon_sotuvchi'] = update.message.text
+    context.user_data['shop_owner'] = update.message.text
+    
     await update.message.reply_text(
         "📸 Do'kon rasmini yuboring:\n\n"
-        "❗️ MAJBURIY"
+        "❗️ MAJBURIY — rasm yuboring"
     )
-    return S_DI_PHT
+    return S_SHOP_PHOTO
 
-async def di_pht(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get photo"""
+async def shop_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get photo - MANDATORY"""
     if not update.message.photo:
         await update.message.reply_text(
-            "❌ Iltimos rasm yuboring!"
+            "❌ Iltimos RASM yuboring!\n\n"
+            "Text emas, rasm kerak."
         )
-        return S_DI_PHT
+        return S_SHOP_PHOTO
     
     photo = update.message.photo[-1]
-    context.user_data['dokon_photo'] = photo.file_id
+    context.user_data['shop_photo'] = photo.file_id
     
     await update.message.reply_text(
         "📍 Lokatsiyani yuboring:\n\n"
-        "❗️ MAJBURIY"
+        "❗️ MAJBURIY — lokatsiya yuboring"
     )
-    return S_DI_LOC
+    return S_SHOP_LOCATION
 
-async def di_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get location and save"""
+async def shop_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get location and save shop"""
     if not update.message.location:
         await update.message.reply_text(
-            "❌ Iltimos lokatsiya yuboring!"
+            "❌ Iltimos LOKATSIYA yuboring!\n\n"
+            "Text emas, lokatsiya kerak."
         )
-        return S_DI_LOC
+        return S_SHOP_LOCATION
     
     loc = update.message.location
     user_id = update.effective_user.id
     user_name = update.effective_user.full_name
     
-    dokon_id = generate_id("dk")
+    # Generate shop ID
+    shop_id = generate_id("dk")
     
-    nom = context.user_data.get('dokon_nom', '')
-    adr = context.user_data.get('dokon_adres', '')
-    mchj = context.user_data.get('dokon_mchj', '')
-    tel1 = context.user_data.get('dokon_tel1', '')
-    tel2 = context.user_data.get('dokon_tel2', '')
-    sotuvchi = context.user_data.get('dokon_sotuvchi', '')
-    photo_id = context.user_data.get('dokon_photo', '')
+    # Get data from context
+    name = context.user_data.get('shop_name', '')
+    address = context.user_data.get('shop_address', '')
+    mchj = context.user_data.get('shop_mchj', '')
+    tel1 = context.user_data.get('shop_tel1', '')
+    tel2 = context.user_data.get('shop_tel2', '')
+    owner = context.user_data.get('shop_owner', '')
+    photo_id = context.user_data.get('shop_photo', '')
     lat = loc.latitude
     lng = loc.longitude
     sana = date.today().strftime("%Y-%m-%d")
@@ -406,12 +548,12 @@ async def di_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CHANNEL_ID:
         try:
             caption = (
-                f"✅ Do'kon qo'shildi!\n\n"
-                f"📍 {nom}\n"
+                f"✅ Yangi do'kon!\n\n"
+                f"📍 {name}\n"
                 f"🏢 {mchj}\n"
-                f"📫 {adr}\n"
+                f"📫 {address}\n"
                 f"📞 {tel1}\n"
-                f"👤 {sotuvchi}\n"
+                f"👤 {owner}\n"
                 f"🚚 {user_name}"
             )
             
@@ -427,59 +569,71 @@ async def di_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 latitude=lat,
                 longitude=lng
             )
+            
+            logger.info(f"✅ Posted to channel: {channel_msg_id}")
         except Exception as e:
-            logger.error(f"Channel post failed: {e}")
+            logger.error(f"❌ Channel post failed: {e}")
     
     # Save to Sheets
     row = [
-        dokon_id, nom, adr, mchj, tel1, tel2, sotuvchi,
+        shop_id, name, address, mchj, tel1, tel2, owner,
         str(user_id), user_name, lat, lng, channel_msg_id, sana
     ]
     
-    logger.info(f"Saving shop: {dokon_id} - {nom}")
+    logger.info(f"💾 Saving shop: {shop_id} - {name}")
     
     try:
         result = db_add("Dokonlar", row)
         if result:
-            logger.info(f"✅ Shop saved: {dokon_id}")
+            logger.info(f"✅ Shop saved successfully: {shop_id}")
+            
+            buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+            
             await update.message.reply_text(
-                f"✅ Do'kon qo'shildi!\n\n"
-                f"📍 {nom}\n"
-                f"📫 {adr}\n"
-                f"📞 {tel1}",
-                reply_markup=ReplyKeyboardMarkup([
-                    ["🏪 Do'konlarim", "➕ Do'kon qo'shish"],
-                    ["📦 Zavoddan qabul", "📋 Buyurtmalar"]
-                ], resize_keyboard=True)
+                f"✅ Do'kon muvaffaqiyatli qo'shildi!\n\n"
+                f"📍 {name}\n"
+                f"📫 {address}\n"
+                f"📞 {tel1}\n"
+                f"👤 {owner}",
+                reply_markup=InlineKeyboardMarkup(buttons)
             )
         else:
-            logger.error(f"❌ Failed to save shop: {dokon_id}")
-            await update.message.reply_text("❌ Xatolik! Qaytadan urinib ko'ring.")
+            logger.error(f"❌ db_add returned False")
+            await update.message.reply_text(
+                "❌ Xatolik yuz berdi!\n"
+                "Qaytadan urinib ko'ring."
+            )
     except Exception as e:
-        logger.error(f"❌ Exception saving shop: {e}")
+        logger.error(f"❌ Exception: {e}")
         await update.message.reply_text(f"❌ Xatolik: {str(e)}")
     
     context.user_data.clear()
     return ConversationHandler.END
 
 # ═══════════════════════════════════════════════════════════
-# FACTORY RECEIPT
+# FACTORY RECEIPT (Multi-product)
 # ═══════════════════════════════════════════════════════════
 
 async def qabul_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start factory receipt"""
+    query = update.callback_query
+    await query.answer()
+    
     context.user_data['qabul_items'] = []
     context.user_data['qabul_id'] = generate_id("qb")
     
-    return await qabul_select_product(update, context)
+    return await qabul_select_product(query, context)
 
-async def qabul_select_product(update, context: ContextTypes.DEFAULT_TYPE):
-    """Select product"""
+async def qabul_select_product(query_or_update, context: ContextTypes.DEFAULT_TYPE):
+    """Select product for receipt"""
     products = db_get_all("Mahsulotlar_Asosiy")
     active = [p for p in products if p.get('Status') == 'active']
     
     if not active:
-        await update.message.reply_text("❌ Mahsulotlar topilmadi.")
+        if hasattr(query_or_update, 'edit_message_text'):
+            await query_or_update.edit_message_text("❌ Mahsulotlar topilmadi!")
+        else:
+            await query_or_update.message.reply_text("❌ Mahsulotlar topilmadi!")
         return ConversationHandler.END
     
     # Group by name
@@ -491,25 +645,33 @@ async def qabul_select_product(update, context: ContextTypes.DEFAULT_TYPE):
         grouped[name].append(p)
     
     buttons = []
-    for name, variants in grouped.items():
+    for name, variants in sorted(grouped.items()):
         if len(variants) == 1:
             p = variants[0]
             turi = p.get('Turi', '-')
             label = f"{name}" if turi == '-' else f"{name} {turi}"
-            buttons.append([InlineKeyboardButton(label, callback_data=f"qb_{p.get('ID')}")])
+            buttons.append([InlineKeyboardButton(label, callback_data=f"qabul_p_{p.get('ID')}")])
         else:
             for p in variants:
                 turi = p.get('Turi', '-')
                 label = f"{name} {turi}"
-                buttons.append([InlineKeyboardButton(label, callback_data=f"qb_{p.get('ID')}")])
+                buttons.append([InlineKeyboardButton(label, callback_data=f"qabul_p_{p.get('ID')}")])
     
-    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="qb_cancel")])
+    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="qabul_cancel")])
     
-    await update.message.reply_text(
-        "📦 Zavoddan qabul\n\n"
-        "Mahsulotni tanlang:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    if hasattr(query_or_update, 'edit_message_text'):
+        await query_or_update.edit_message_text(
+            "📦 Zavoddan qabul qilish\n\n"
+            "Mahsulotni tanlang:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    else:
+        await query_or_update.message.reply_text(
+            "📦 Zavoddan qabul qilish\n\n"
+            "Mahsulotni tanlang:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    
     return S_QABUL_PRODUCT
 
 async def qabul_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -517,22 +679,16 @@ async def qabul_product_callback(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     
-    if query.data == "qb_cancel":
+    if query.data == "qabul_cancel":
         await query.edit_message_text("❌ Bekor qilindi")
         context.user_data.clear()
         return ConversationHandler.END
     
-    product_id = query.data.replace("qb_", "")
-    products = db_get_all("Mahsulotlar_Asosiy")
-    
-    product = None
-    for p in products:
-        if p.get('ID') == product_id:
-            product = p
-            break
+    product_id = query.data.replace("qabul_p_", "")
+    product = get_product_by_id(product_id)
     
     if not product:
-        await query.edit_message_text("❌ Mahsulot topilmadi")
+        await query.edit_message_text("❌ Mahsulot topilmadi!")
         return ConversationHandler.END
     
     context.user_data['current_qabul_product'] = product
@@ -540,10 +696,13 @@ async def qabul_product_callback(update: Update, context: ContextTypes.DEFAULT_T
     name = product.get('Nomi')
     turi = product.get('Turi', '-')
     birlik = product.get('Birlik')
+    zavod = format_number(product.get('Zavod_Narxi'))
+    
     label = f"{name}" if turi == '-' else f"{name} {turi}"
     
     await query.edit_message_text(
-        f"Mahsulot: {label}\n\n"
+        f"📦 Mahsulot: {label}\n"
+        f"💰 Zavod narxi: {zavod} so'm/{birlik}\n\n"
         f"Miqdorni kiriting ({birlik}):"
     )
     return S_QABUL_AMOUNT
@@ -555,7 +714,7 @@ async def qabul_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except:
-        await update.message.reply_text("❌ Noto'g'ri miqdor!")
+        await update.message.reply_text("❌ Noto'g'ri miqdor! Raqam kiriting:")
         return S_QABUL_AMOUNT
     
     product = context.user_data.get('current_qabul_product')
@@ -572,8 +731,6 @@ async def qabul_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'jami': jami
     }
     
-    if 'qabul_items' not in context.user_data:
-        context.user_data['qabul_items'] = []
     context.user_data['qabul_items'].append(item)
     
     name = product.get('Nomi')
@@ -581,28 +738,30 @@ async def qabul_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label = f"{name}" if turi == '-' else f"{name} {turi}"
     
     buttons = [
-        [InlineKeyboardButton("➕ Yana mahsulot", callback_data="qb_more")],
-        [InlineKeyboardButton("✅ Yakunlash", callback_data="qb_finish")]
+        [InlineKeyboardButton("➕ Yana mahsulot qabul qilish", callback_data="qabul_more")],
+        [InlineKeyboardButton("✅ Yakunlash", callback_data="qabul_finish")]
     ]
     
     await update.message.reply_text(
         f"✅ Qabul qilindi!\n\n"
-        f"{label}: {amount} {product.get('Birlik')}\n"
-        f"Summa: {format_number(jami)} so'm",
+        f"📦 {label}\n"
+        f"📊 Miqdor: {amount} {product.get('Birlik')}\n"
+        f"💰 Summa: {format_number(jami)} so'm\n\n"
+        f"Omborga qo'shildi!",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
     return S_QABUL_MORE
 
 async def qabul_more_or_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """More or finish"""
+    """More products or finish"""
     query = update.callback_query
     await query.answer()
     
-    if query.data == "qb_more":
+    if query.data == "qabul_more":
         await query.message.delete()
         return await qabul_select_product(query, context)
     
-    # Finish
+    # Finish - save all items
     items = context.user_data.get('qabul_items', [])
     qabul_id = context.user_data.get('qabul_id')
     user_id = update.effective_user.id
@@ -610,6 +769,7 @@ async def qabul_more_or_finish(update: Update, context: ContextTypes.DEFAULT_TYP
     
     total = 0
     for item in items:
+        # Save to Qabul sheet
         row = [
             sana, str(user_id), item['nomi'], item['turi'],
             item['miqdor'], item['birlik'], item['zavod_narx'],
@@ -619,31 +779,40 @@ async def qabul_more_or_finish(update: Update, context: ContextTypes.DEFAULT_TYP
         total += item['jami']
         
         # Update Ombor
-        update_ombor(user_id, item['mahsulot_id'], item['nomi'], 
-                    item['turi'], item['miqdor'], item['birlik'], 'add')
+        update_ombor(
+            str(user_id), item['mahsulot_id'], item['nomi'],
+            item['turi'], item['miqdor'], item['birlik'], 'add'
+        )
     
+    # Summary
     msg = "✅ Qabul yakunlandi!\n\n"
     for item in items:
         label = f"{item['nomi']}" if item['turi'] == '-' else f"{item['nomi']} {item['turi']}"
         msg += f"• {label}: {item['miqdor']} {item['birlik']}\n"
-    msg += f"\n💰 Jami: {format_number(total)} so'm"
+    msg += f"\n💰 Jami summa: {format_number(total)} so'm"
     
-    await query.edit_message_text(msg)
+    buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     context.user_data.clear()
     return ConversationHandler.END
 
 # ═══════════════════════════════════════════════════════════
-# ORDER
+# ORDER (Multi-product)
 # ═══════════════════════════════════════════════════════════
 
-async def buyurtma_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Order menu"""
+async def orders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Orders menu"""
+    query = update.callback_query
+    await query.answer()
+    
     buttons = [
         [InlineKeyboardButton("➕ Yangi zakaz", callback_data="order_new")],
-        [InlineKeyboardButton("📋 Ko'rish", callback_data="order_view")]
+        [InlineKeyboardButton("📋 Zakazlarni ko'rish", callback_data="order_view")],
+        [InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]
     ]
     
-    await update.message.reply_text(
+    await query.edit_message_text(
         "📋 Buyurtmalar",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -658,22 +827,27 @@ async def order_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     my_shops = [s for s in shops if str(s.get('Dist_ID')) == str(user_id)]
     
     if not my_shops:
-        await query.edit_message_text("❌ Sizda do'konlar yo'q")
+        buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "❌ Sizda do'konlar yo'q!\n\n"
+            "Avval do'kon qo'shing.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return ConversationHandler.END
     
     buttons = []
     for shop in my_shops:
         buttons.append([InlineKeyboardButton(
             shop.get('Nomi'),
-            callback_data=f"ord_shop_{shop.get('ID')}"
+            callback_data=f"order_s_{shop.get('ID')}"
         )])
-    buttons.append([InlineKeyboardButton("❌ Bekor", callback_data="ord_cancel")])
+    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="order_cancel")])
     
     context.user_data['order_items'] = []
     context.user_data['zakaz_id'] = generate_id("z")
     
     await query.edit_message_text(
-        "Do'konni tanlang:",
+        "🏪 Do'konni tanlang:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
     return S_ORDER_SHOP
@@ -683,33 +857,32 @@ async def order_shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
-    if query.data == "ord_cancel":
+    if query.data == "order_cancel":
         await query.edit_message_text("❌ Bekor qilindi")
         context.user_data.clear()
         return ConversationHandler.END
     
-    shop_id = query.data.replace("ord_shop_", "")
-    shops = db_get_all("Dokonlar")
-    
-    shop = None
-    for s in shops:
-        if s.get('ID') == shop_id:
-            shop = s
-            break
+    shop_id = query.data.replace("order_s_", "")
+    shop = get_shop_by_id(shop_id)
     
     if not shop:
-        await query.edit_message_text("❌ Do'kon topilmadi")
+        await query.edit_message_text("❌ Do'kon topilmadi!")
         return ConversationHandler.END
     
     context.user_data['order_shop'] = shop
     return await order_select_product(query, context)
 
-async def order_select_product(update, context: ContextTypes.DEFAULT_TYPE):
-    """Select product"""
+async def order_select_product(query_or_update, context: ContextTypes.DEFAULT_TYPE):
+    """Select product for order"""
     products = db_get_all("Mahsulotlar_Asosiy")
     active = [p for p in products if p.get('Status') == 'active']
     
-    user_id = update.from_user.id if hasattr(update, 'from_user') else update.effective_user.id
+    if not active:
+        if hasattr(query_or_update, 'edit_message_text'):
+            await query_or_update.edit_message_text("❌ Mahsulotlar topilmadi!")
+        return ConversationHandler.END
+    
+    user_id = query_or_update.from_user.id if hasattr(query_or_update, 'from_user') else query_or_update.effective_user.id
     shop = context.user_data.get('order_shop')
     
     # Group
@@ -721,7 +894,7 @@ async def order_select_product(update, context: ContextTypes.DEFAULT_TYPE):
         grouped[name].append(p)
     
     buttons = []
-    for name, variants in grouped.items():
+    for name, variants in sorted(grouped.items()):
         if len(variants) == 1:
             p = variants[0]
             turi = p.get('Turi', '-')
@@ -733,7 +906,7 @@ async def order_select_product(update, context: ContextTypes.DEFAULT_TYPE):
             if has_custom:
                 label += " ⭐"
             
-            buttons.append([InlineKeyboardButton(label, callback_data=f"ord_prod_{p.get('ID')}")])
+            buttons.append([InlineKeyboardButton(label, callback_data=f"order_p_{p.get('ID')}")])
         else:
             for p in variants:
                 turi = p.get('Turi', '-')
@@ -744,20 +917,15 @@ async def order_select_product(update, context: ContextTypes.DEFAULT_TYPE):
                 if has_custom:
                     label += " ⭐"
                 
-                buttons.append([InlineKeyboardButton(label, callback_data=f"ord_prod_{p.get('ID')}")])
+                buttons.append([InlineKeyboardButton(label, callback_data=f"order_p_{p.get('ID')}")])
     
-    buttons.append([InlineKeyboardButton("❌ Bekor", callback_data="ord_cancel")])
+    buttons.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="order_cancel")])
     
-    if hasattr(update, 'edit_message_text'):
-        await update.edit_message_text(
+    if hasattr(query_or_update, 'edit_message_text'):
+        await query_or_update.edit_message_text(
             f"🏪 {shop.get('Nomi')}\n\n"
-            "Mahsulotni tanlang:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-    else:
-        await update.message.reply_text(
-            f"🏪 {shop.get('Nomi')}\n\n"
-            "Mahsulotni tanlang:",
+            "Mahsulotni tanlang:\n"
+            "⭐ = Maxsus narx",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     
@@ -768,33 +936,33 @@ async def order_product_callback(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     
-    if query.data == "ord_cancel":
+    if query.data == "order_cancel":
         await query.edit_message_text("❌ Bekor qilindi")
         context.user_data.clear()
         return ConversationHandler.END
     
-    product_id = query.data.replace("ord_prod_", "")
-    products = db_get_all("Mahsulotlar_Asosiy")
-    
-    product = None
-    for p in products:
-        if p.get('ID') == product_id:
-            product = p
-            break
+    product_id = query.data.replace("order_p_", "")
+    product = get_product_by_id(product_id)
     
     if not product:
-        await query.edit_message_text("❌ Mahsulot topilmadi")
+        await query.edit_message_text("❌ Mahsulot topilmadi!")
         return ConversationHandler.END
     
     context.user_data['current_order_product'] = product
     
+    user_id = update.effective_user.id
+    shop = context.user_data.get('order_shop')
+    
     name = product.get('Nomi')
     turi = product.get('Turi', '-')
     birlik = product.get('Birlik')
+    price = get_selling_price(user_id, shop.get('ID'), product_id)
+    
     label = f"{name}" if turi == '-' else f"{name} {turi}"
     
     await query.edit_message_text(
-        f"Mahsulot: {label}\n\n"
+        f"📦 Mahsulot: {label}\n"
+        f"💰 Narx: {format_number(price)} so'm/{birlik}\n\n"
         f"Miqdorni kiriting ({birlik}):"
     )
     return S_ORDER_AMOUNT
@@ -806,7 +974,7 @@ async def order_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount <= 0:
             raise ValueError
     except:
-        await update.message.reply_text("❌ Noto'g'ri miqdor!")
+        await update.message.reply_text("❌ Noto'g'ri miqdor! Raqam kiriting:")
         return S_ORDER_AMOUNT
     
     user_id = update.effective_user.id
@@ -826,8 +994,6 @@ async def order_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'jami': jami
     }
     
-    if 'order_items' not in context.user_data:
-        context.user_data['order_items'] = []
     context.user_data['order_items'].append(item)
     
     name = product.get('Nomi')
@@ -835,28 +1001,30 @@ async def order_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label = f"{name}" if turi == '-' else f"{name} {turi}"
     
     buttons = [
-        [InlineKeyboardButton("➕ Yana", callback_data="ord_more")],
-        [InlineKeyboardButton("📋 Tasdiqlash", callback_data="ord_confirm")]
+        [InlineKeyboardButton("➕ Yana mahsulot", callback_data="order_more")],
+        [InlineKeyboardButton("📋 Zakazni tasdiqlash", callback_data="order_confirm")]
     ]
     
     await update.message.reply_text(
         f"✅ Savatga qo'shildi!\n\n"
-        f"{label}: {amount} {product.get('Birlik')}\n"
-        f"Jami: {format_number(jami)} so'm",
+        f"📦 {label}\n"
+        f"📊 Miqdor: {amount} {product.get('Birlik')}\n"
+        f"💰 Narx: {format_number(price)} so'm\n"
+        f"💵 Jami: {format_number(jami)} so'm",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
     return S_ORDER_MORE
 
 async def order_more_or_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """More or confirm"""
+    """More products or confirm order"""
     query = update.callback_query
     await query.answer()
     
-    if query.data == "ord_more":
+    if query.data == "order_more":
         await query.message.delete()
         return await order_select_product(query, context)
     
-    # Confirm
+    # Confirm - save order
     items = context.user_data.get('order_items', [])
     zakaz_id = context.user_data.get('zakaz_id')
     shop = context.user_data.get('order_shop')
@@ -874,13 +1042,15 @@ async def order_more_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         total += item['jami']
     
     msg = f"✅ Zakaz tasdiqlandi!\n\n"
-    msg += f"🏪 {shop.get('Nomi')}\n\n"
+    msg += f"🏪 Do'kon: {shop.get('Nomi')}\n\n"
     for item in items:
         label = f"{item['nomi']}" if item['turi'] == '-' else f"{item['nomi']} {item['turi']}"
         msg += f"• {label}: {item['miqdor']} {item['birlik']}\n"
     msg += f"\n💰 Jami: {format_number(total)} so'm"
     
-    await query.edit_message_text(msg)
+    buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -888,32 +1058,37 @@ async def order_more_or_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 # REPORTS
 # ═══════════════════════════════════════════════════════════
 
-async def hisobotlar_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reports menu"""
+    query = update.callback_query
+    await query.answer()
+    
     buttons = [
-        [InlineKeyboardButton("📊 Kunlik", callback_data="rep_daily")],
-        [InlineKeyboardButton("📅 7 kun", callback_data="rep_7")],
-        [InlineKeyboardButton("📅 15 kun", callback_data="rep_15")],
-        [InlineKeyboardButton("📅 30 kun", callback_data="rep_30")]
+        [InlineKeyboardButton("📊 Kunlik", callback_data="rep_day")],
+        [InlineKeyboardButton("📅 7 kunlik", callback_data="rep_7")],
+        [InlineKeyboardButton("📅 15 kunlik", callback_data="rep_15")],
+        [InlineKeyboardButton("📅 30 kunlik", callback_data="rep_30")],
+        [InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]
     ]
     
-    await update.message.reply_text(
-        "📊 Hisobotlar",
+    await query.edit_message_text(
+        "📊 Hisobotlar\n\n"
+        "Davr tanlang:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate report"""
+async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate report for selected period"""
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
     today = date.today()
     
-    if query.data == "rep_daily":
+    if query.data == "rep_day":
         start = today
         end = today
-        title = f"📊 Kunlik — {today.strftime('%Y-%m-%d')}"
+        title = f"📊 Kunlik — {today.strftime('%d.%m.%Y')}"
     elif query.data == "rep_7":
         start = today - timedelta(days=7)
         end = today
@@ -922,15 +1097,18 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start = today - timedelta(days=15)
         end = today
         title = f"📊 15 kunlik"
-    else:
+    else:  # rep_30
         start = today - timedelta(days=30)
         end = today
         title = f"📊 30 kunlik"
     
-    # Calculate
+    await query.edit_message_text("⏳ Hisobot tayyorlanmoqda...")
+    
+    # Get data
     qabul_data = db_get_all("Qabul")
     topshirish_data = db_get_all("Topshirish")
     tolov_data = db_get_all("Tolov")
+    products_map = {p.get('ID'): p for p in db_get_all("Mahsulotlar_Asosiy")}
     
     zavod = 0
     for q in qabul_data:
@@ -948,8 +1126,6 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qarz = 0
     dokonlar = set()
     
-    products_map = {p.get('ID'): p for p in db_get_all("Mahsulotlar_Asosiy")}
-    
     for t in topshirish_data:
         if str(t.get('Dist_ID')) == str(user_id):
             try:
@@ -959,7 +1135,7 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     turi = t.get('Turi')
                     top_miqdor = float(t.get('Topshirish_Miqdor', 0))
                     
-                    # Find product ID
+                    # Find product
                     prod_id = None
                     for pid, p in products_map.items():
                         if p.get('Nomi') == mahsulot and p.get('Turi') == turi:
@@ -969,11 +1145,12 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if prod_id:
                         price = get_selling_price(user_id, t.get('Dokon_ID'), prod_id)
                         sotuv += top_miqdor * price
-                    
-                    voz_miqdor = float(t.get('Vozvrat_Miqdor', 0))
-                    if voz_miqdor > 0 and prod_id:
-                        zavod_narx = get_factory_price(prod_id)
-                        vozvrat_summa += voz_miqdor * zavod_narx
+                        
+                        # Vozvrat at factory price
+                        voz_miqdor = float(t.get('Vozvrat_Miqdor', 0))
+                        if voz_miqdor > 0:
+                            zavod_narx = get_factory_price(prod_id)
+                            vozvrat_summa += voz_miqdor * zavod_narx
                     
                     naqd += int(t.get('Naqd', 0))
                     qarz += int(t.get('Qarz', 0))
@@ -981,6 +1158,7 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Report calc error: {e}")
     
+    # Total debt (all time)
     jami_qarz = 0
     for t in topshirish_data:
         if str(t.get('Dist_ID')) == str(user_id):
@@ -1002,21 +1180,33 @@ async def report_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"💰 Foyda: {format_number(int(foyda))}\n"
     msg += f"🏪 {len(dokonlar)} do'kon"
     
-    await query.edit_message_text(msg)
+    buttons = [
+        [InlineKeyboardButton("🔄 Boshqa davr", callback_data="menu_reports")],
+        [InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]
+    ]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
 async def show_ombor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show warehouse"""
+    """Show warehouse stock"""
+    query = update.callback_query
+    await query.answer()
+    
     user_id = update.effective_user.id
     ombor = db_get_all("Ombor")
     
-    my = [o for o in ombor if str(o.get('Dist_ID')) == str(user_id)]
+    my_stock = [o for o in ombor if str(o.get('Dist_ID')) == str(user_id)]
     
-    if not my:
-        await update.message.reply_text("📦 Ombor bo'sh")
+    if not my_stock:
+        buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "📦 Ombor bo'sh",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
     
     msg = "📦 Mening omborim:\n\n"
-    for item in my:
+    for item in my_stock:
         name = item.get('Mahsulot')
         turi = item.get('Turi', '-')
         miqdor = item.get('Miqdor')
@@ -1025,7 +1215,29 @@ async def show_ombor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = f"{name}" if turi == '-' else f"{name} {turi}"
         msg += f"• {label}: {miqdor} {birlik}\n"
     
-    await update.message.reply_text(msg)
+    buttons = [[InlineKeyboardButton("🏠 Asosiy menyu", callback_data="menu_main")]]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+# ═══════════════════════════════════════════════════════════
+# CALLBACK ROUTER
+# ═══════════════════════════════════════════════════════════
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Route callbacks to appropriate handlers"""
+    query = update.callback_query
+    data = query.data
+    
+    if data == "menu_main":
+        await show_main_menu(update, context)
+    elif data == "menu_shops":
+        await show_shops_list(update, context)
+    elif data == "menu_reports":
+        await reports_menu(update, context)
+    elif data == "menu_ombor":
+        await show_ombor(update, context)
+    elif data == "menu_orders":
+        await orders_menu(update, context)
 
 # ═══════════════════════════════════════════════════════════
 # MAIN
@@ -1033,27 +1245,35 @@ async def show_ombor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function"""
+    logger.info("🚀 Starting Alba Milk Bot...")
+    
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Shop registration
+    # Shop registration conversation
     shop_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^➕ Do'kon qo'shish$"), dokon_start)],
+        entry_points=[CallbackQueryHandler(shop_start, pattern="^menu_add_shop$")],
         states={
-            S_DI_NM: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_nm)],
-            S_DI_ADR: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_adr)],
-            S_DI_MCHJ: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_mchj)],
-            S_DI_TEL1: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_tel1)],
-            S_DI_TEL2: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_tel2)],
-            S_DI_EG: [MessageHandler(filters.TEXT & ~filters.COMMAND, di_eg)],
-            S_DI_PHT: [MessageHandler(filters.PHOTO | filters.TEXT, di_pht)],
-            S_DI_LOC: [MessageHandler(filters.LOCATION | filters.TEXT, di_loc)],
+            S_SHOP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, shop_name)],
+            S_SHOP_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, shop_address)],
+            S_SHOP_MCHJ: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, shop_mchj),
+                CallbackQueryHandler(shop_mchj, pattern="^shop_skip_mchj$")
+            ],
+            S_SHOP_TEL1: [MessageHandler(filters.TEXT & ~filters.COMMAND, shop_tel1)],
+            S_SHOP_TEL2: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, shop_tel2),
+                CallbackQueryHandler(shop_tel2, pattern="^shop_skip_tel2$")
+            ],
+            S_SHOP_OWNER: [MessageHandler(filters.TEXT & ~filters.COMMAND, shop_owner)],
+            S_SHOP_PHOTO: [MessageHandler(filters.PHOTO | filters.TEXT, shop_photo)],
+            S_SHOP_LOCATION: [MessageHandler(filters.LOCATION | filters.TEXT, shop_location)],
         },
         fallbacks=[CommandHandler('start', start)],
     )
     
-    # Factory receipt
+    # Factory receipt conversation
     qabul_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^📦 Zavoddan qabul$"), qabul_start)],
+        entry_points=[CallbackQueryHandler(qabul_start, pattern="^menu_qabul$")],
         states={
             S_QABUL_PRODUCT: [CallbackQueryHandler(qabul_product_callback)],
             S_QABUL_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, qabul_amount)],
@@ -1062,12 +1282,9 @@ def main():
         fallbacks=[CommandHandler('start', start)],
     )
     
-    # Order
+    # Order conversation
     order_conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^📋 Buyurtmalar$"), buyurtma_menu),
-            CallbackQueryHandler(order_new, pattern="^order_new$")
-        ],
+        entry_points=[CallbackQueryHandler(order_new, pattern="^order_new$")],
         states={
             S_ORDER_SHOP: [CallbackQueryHandler(order_shop_callback)],
             S_ORDER_PRODUCT: [CallbackQueryHandler(order_product_callback)],
@@ -1077,23 +1294,18 @@ def main():
         fallbacks=[CommandHandler('start', start)],
     )
     
-    # Handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(shop_conv)
     application.add_handler(qabul_conv)
     application.add_handler(order_conv)
     
-    # Reports
-    application.add_handler(MessageHandler(filters.Regex("^📊 Hisobotlar$"), hisobotlar_menu))
-    application.add_handler(CallbackQueryHandler(report_generate, pattern="^rep_"))
+    # Callback handlers
+    application.add_handler(CallbackQueryHandler(generate_report, pattern="^rep_"))
+    application.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Ombor
-    application.add_handler(MessageHandler(filters.Regex("^🏦 Ombor$"), show_ombor))
-    
-    # Main menu
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu))
-    
-    logger.info("Bot started!")
+    # Start bot
+    logger.info("✅ Bot started successfully!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
