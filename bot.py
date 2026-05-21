@@ -256,6 +256,155 @@ def get_selling_price(dist_id: str, dokon_id: str, mahsulot_id: str) -> int:
             str(cp.get('Mahsulot_ID', '')).strip() == str(mahsulot_id).strip()):
             try:
                 return int(cp.get('Sotish_Narxi', 0))
+
+# ═══════════════════════════════════════════════════════════
+# DISTRIBUTOR REGISTRATION (NEW USERS)
+# ═══════════════════════════════════════════════════════════
+
+# New states for distributor registration
+S_DIST_REG_NAME, S_DIST_REG_PHONE, S_DIST_REG_PASSPORT = range(700, 703)
+
+async def start_with_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start - check if user is registered"""
+    user_id = update.effective_user.id
+    user_name = update.effective_user.full_name
+    
+    # Check if admin
+    if user_id in ADMIN_IDS:
+        return await start(update, context)
+    
+    # Check if registered distributor
+    distributors = db_get_all("Distribyutorlar")
+    is_registered = False
+    is_approved = False
+    
+    for d in distributors:
+        if str(d.get('Telegram_ID', '')).strip() == str(user_id).strip():
+            is_registered = True
+            if str(d.get('Status', '')).strip() == 'tasdiqlangan':
+                is_approved = True
+            break
+    
+    if is_registered and is_approved:
+        # Registered and approved - show main menu
+        return await start(update, context)
+    elif is_registered and not is_approved:
+        # Registered but waiting approval
+        await update.message.reply_text(
+            "⏳ Sizning arizangiz ko'rib chiqilmoqda.\n\n"
+            "Admin tasdiqlashini kuting."
+        )
+        return
+    else:
+        # Not registered - start registration
+        btns = [[InlineKeyboardButton("📝 Ro'yxatdan o'tish", callback_data="dist_register_start")]]
+        
+        await update.message.reply_text(
+            f"Assalomu alaykum, {user_name}!\n\n"
+            "🥛 Alba Milk distribyutor botiga xush kelibsiz.\n\n"
+            "Botdan foydalanish uchun ro'yxatdan o'ting.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+
+async def dist_register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start distributor registration"""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text(
+        "📝 Distribyutor ro'yxatdan o'tish\n\n"
+        "Ismingizni kiriting (to'liq):"
+    )
+    return S_DIST_REG_NAME
+
+async def dist_reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Name entered"""
+    context.user_data['dist_name'] = update.message.text
+    
+    await update.message.reply_text(
+        "📞 Telefon raqamingizni kiriting:\n\n"
+        "Format: 998901234567\n"
+        "Faqat raqamlar!"
+    )
+    return S_DIST_REG_PHONE
+
+async def dist_reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Phone entered"""
+    phone = clean_phone(update.message.text)
+    
+    if not re.match(r'^998\d{9}$', phone):
+        await update.message.reply_text(
+            "❌ Noto'g'ri format!\n\n"
+            "Faqat raqam: 998901234567"
+        )
+        return S_DIST_REG_PHONE
+    
+    context.user_data['dist_phone'] = phone
+    
+    await update.message.reply_text(
+        "📸 Passport rasmingizni yuboring:\n\n"
+        "❗️ MAJBURIY — passport rasmi yuboring"
+    )
+    return S_DIST_REG_PASSPORT
+
+async def dist_reg_passport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Passport photo - save registration"""
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❌ Iltimos PASSPORT RASMI yuboring!\n\n"
+            "Text emas, rasm kerak."
+        )
+        return S_DIST_REG_PASSPORT
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username or ""
+    
+    dist_id = generate_id("dist")
+    name = context.user_data.get('dist_name', '')
+    phone = context.user_data.get('dist_phone', '')
+    passport_photo = update.message.photo[-1].file_id
+    sana = date.today().strftime("%Y-%m-%d")
+    
+    # Save to Distribyutorlar sheet
+    row = [
+        dist_id, name, phone, str(user_id), username,
+        passport_photo, 'kutilmoqda', sana
+    ]
+    
+    if db_add("Distribyutorlar", row):
+        # Notify admins
+        if ADMIN_IDS:
+            admin_msg = (
+                f"🆕 Yangi distribyutor ariza!\n\n"
+                f"👤 Ism: {name}\n"
+                f"📞 Tel: {phone}\n"
+                f"🆔 ID: {user_id}\n"
+                f"📅 Sana: {sana}\n\n"
+                f"Admin paneldan tasdiqlang."
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=admin_id,
+                        photo=passport_photo,
+                        caption=admin_msg
+                    )
+                except:
+                    pass
+        
+        await update.message.reply_text(
+            f"✅ Arizangiz yuborildi!\n\n"
+            f"👤 {name}\n"
+            f"📞 {phone}\n\n"
+            f"⏳ Admin tasdiqlashini kuting.\n"
+            f"Siz bildirish olasiz."
+        )
+    else:
+        await update.message.reply_text("❌ Xatolik yuz berdi!")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
             except:
                 pass
     
@@ -2100,10 +2249,610 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("💰 Zavod narx", callback_data="adm_zavod"),
             InlineKeyboardButton("📊 Barcha hisobot", callback_data="adm_report")
         ],
+        [
+            InlineKeyboardButton("👥 Distribyutorlar", callback_data="adm_distributors"),
+            InlineKeyboardButton("🏪 Do'konlar", callback_data="adm_all_shops")
+        ],
         [InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]
     ]
     
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN - VIEW DISTRIBUTORS & SHOPS
+# ═══════════════════════════════════════════════════════════
+
+async def admin_view_distributors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show list of all distributors"""
+    query = update.callback_query
+    await query.answer()
+    
+    distributors = db_get_all("Distribyutorlar")
+    
+    if not distributors:
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "👥 Distribyutorlar yo'q",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+    
+    # Separate by status
+    pending = [d for d in distributors if d.get('Status') == 'kutilmoqda']
+    approved = [d for d in distributors if d.get('Status') == 'tasdiqlangan']
+    rejected = [d for d in distributors if d.get('Status') == 'rad_etilgan']
+    
+    btn_list = []
+    
+    # Pending first (with 🆕)
+    for d in pending:
+        name = d.get('Ism', 'Unknown')
+        btn_list.append(InlineKeyboardButton(
+            f"🆕 {name}",
+            callback_data=f"admdist_{d.get('ID')}"
+        ))
+    
+    # Approved
+    for d in approved:
+        name = d.get('Ism', 'Unknown')
+        btn_list.append(InlineKeyboardButton(
+            f"✅ {name}",
+            callback_data=f"admdist_{d.get('ID')}"
+        ))
+    
+    # Rejected
+    for d in rejected:
+        name = d.get('Ism', 'Unknown')
+        btn_list.append(InlineKeyboardButton(
+            f"❌ {name}",
+            callback_data=f"admdist_{d.get('ID')}"
+        ))
+    
+    # 2 columns
+    btns = []
+    for i in range(0, len(btn_list), 2):
+        if i+1 < len(btn_list):
+            btns.append([btn_list[i], btn_list[i+1]])
+        else:
+            btns.append([btn_list[i]])
+    
+    btns.append([InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")])
+    
+    await query.edit_message_text(
+        f"👥 Distribyutorlar ro'yxati\n\n"
+        f"🆕 Kutilmoqda: {len(pending)}\n"
+        f"✅ Tasdiqlangan: {len(approved)}\n"
+        f"❌ Rad etilgan: {len(rejected)}",
+        reply_markup=InlineKeyboardMarkup(btns)
+    )
+
+async def admin_dist_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show distributor details"""
+    query = update.callback_query
+    await query.answer()
+    
+    dist_id = query.data.replace("admdist_", "")
+    
+    distributors = db_get_all("Distribyutorlar")
+    dist = None
+    for d in distributors:
+        if str(d.get('ID', '')).strip() == str(dist_id).strip():
+            dist = d
+            break
+    
+    if not dist:
+        await query.edit_message_text("❌ Distribyutor topilmadi!")
+        return
+    
+    # Get shops count
+    shops = db_get_all("Dokonlar")
+    dist_shops = [s for s in shops if str(s.get('Dist_ID', '')).strip() == str(dist.get('Telegram_ID', '')).strip()]
+    
+    status = dist.get('Status', 'noma\'lum')
+    status_emoji = "🆕" if status == 'kutilmoqda' else "✅" if status == 'tasdiqlangan' else "❌"
+    
+    msg = f"{status_emoji} Distribyutor ma'lumotlari\n\n"
+    msg += f"👤 Ism: {dist.get('Ism', '')}\n"
+    msg += f"📞 Tel: {dist.get('Telefon', '')}\n"
+    msg += f"🆔 Telegram ID: {dist.get('Telegram_ID', '')}\n"
+    msg += f"👤 Username: @{dist.get('Username', 'yo\'q')}\n"
+    msg += f"📅 Sana: {dist.get('Sana', '')}\n"
+    msg += f"📊 Status: {status}\n"
+    msg += f"🏪 Do'konlar: {len(dist_shops)} ta"
+    
+    btns = []
+    
+    if status == 'kutilmoqda':
+        btns.append([
+            InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"admappr_{dist_id}"),
+            InlineKeyboardButton("❌ Rad etish", callback_data=f"admrej_{dist_id}")
+        ])
+    
+    btns.append([InlineKeyboardButton("📸 Passportni ko'rish", callback_data=f"admpass_{dist_id}")])
+    btns.append([InlineKeyboardButton("🔙 Orqaga", callback_data="adm_distributors")])
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+
+async def admin_show_passport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show distributor passport photo"""
+    query = update.callback_query
+    await query.answer()
+    
+    dist_id = query.data.replace("admpass_", "")
+    
+    distributors = db_get_all("Distribyutorlar")
+    dist = None
+    for d in distributors:
+        if str(d.get('ID', '')).strip() == str(dist_id).strip():
+            dist = d
+            break
+    
+    if not dist:
+        await query.edit_message_text("❌ Distribyutor topilmadi!")
+        return
+    
+    passport_photo = dist.get('Passport_Photo', '')
+    
+    if passport_photo:
+        caption = (
+            f"📸 Passport\n\n"
+            f"👤 {dist.get('Ism', '')}\n"
+            f"📞 {dist.get('Telefon', '')}"
+        )
+        
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=passport_photo,
+            caption=caption
+        )
+    else:
+        await query.answer("❌ Passport rasmi yo'q!", show_alert=True)
+
+async def admin_approve_dist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Approve distributor"""
+    query = update.callback_query
+    await query.answer()
+    
+    dist_id = query.data.replace("admappr_", "")
+    
+    # Update status
+    result = db_update_row("Distribyutorlar", {'ID': dist_id}, {'Status': 'tasdiqlangan'})
+    
+    if result:
+        # Get distributor to notify
+        distributors = db_get_all("Distribyutorlar")
+        dist = None
+        for d in distributors:
+            if str(d.get('ID', '')).strip() == str(dist_id).strip():
+                dist = d
+                break
+        
+        if dist:
+            # Notify distributor
+            try:
+                await context.bot.send_message(
+                    chat_id=int(dist.get('Telegram_ID')),
+                    text=(
+                        f"✅ Tabriklaymiz!\n\n"
+                        f"Sizning arizangiz tasdiqlandi.\n\n"
+                        f"/start - Botdan foydalanish"
+                    )
+                )
+            except:
+                pass
+        
+        await query.answer("✅ Tasdiqlandi!", show_alert=True)
+        
+        # Refresh details
+        await admin_dist_detail(update, context)
+    else:
+        await query.answer("❌ Xatolik!", show_alert=True)
+
+async def admin_reject_dist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reject distributor"""
+    query = update.callback_query
+    await query.answer()
+    
+    dist_id = query.data.replace("admrej_", "")
+    
+    # Update status
+    result = db_update_row("Distribyutorlar", {'ID': dist_id}, {'Status': 'rad_etilgan'})
+    
+    if result:
+        # Get distributor to notify
+        distributors = db_get_all("Distribyutorlar")
+        dist = None
+        for d in distributors:
+            if str(d.get('ID', '')).strip() == str(dist_id).strip():
+                dist = d
+                break
+        
+        if dist:
+            # Notify distributor
+            try:
+                await context.bot.send_message(
+                    chat_id=int(dist.get('Telegram_ID')),
+                    text=(
+                        f"❌ Arizangiz rad etildi.\n\n"
+                        f"Aloqa: Admin bilan bog'laning."
+                    )
+                )
+            except:
+                pass
+        
+        await query.answer("❌ Rad etildi!", show_alert=True)
+        
+        # Refresh details
+        await admin_dist_detail(update, context)
+    else:
+        await query.answer("❌ Xatolik!", show_alert=True)
+
+async def admin_view_all_shops(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show list of all shops"""
+    query = update.callback_query
+    await query.answer()
+    
+    shops = db_get_all("Dokonlar")
+    
+    if not shops:
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "🏪 Do'konlar yo'q",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+    
+    # Group by distributor
+    dist_shops = {}
+    for shop in shops:
+        dist_id = shop.get('Dist_ID', 'Unknown')
+        dist_name = shop.get('Dist_Name', f'ID: {dist_id}')
+        
+        if dist_id not in dist_shops:
+            dist_shops[dist_id] = {
+                'name': dist_name,
+                'shops': []
+            }
+        dist_shops[dist_id]['shops'].append(shop)
+    
+    btn_list = []
+    for dist_id, data in sorted(dist_shops.items(), key=lambda x: len(x[1]['shops']), reverse=True):
+        label = f"{data['name']} ({len(data['shops'])} ta)"
+        btn_list.append(InlineKeyboardButton(
+            label,
+            callback_data=f"admshops_{dist_id}"
+        ))
+    
+    # 1 column (names can be long)
+    btns = [[btn] for btn in btn_list]
+    btns.append([InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")])
+    
+    await query.edit_message_text(
+        f"🏪 Barcha do'konlar\n\n"
+        f"Jami: {len(shops)} ta do'kon\n"
+        f"Distribyutorlar: {len(dist_shops)} ta",
+        reply_markup=InlineKeyboardMarkup(btns)
+    )
+
+async def admin_shops_by_dist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show shops for specific distributor"""
+    query = update.callback_query
+    await query.answer()
+    
+    dist_id = query.data.replace("admshops_", "")
+    
+    shops = db_get_all("Dokonlar")
+    dist_shops = [s for s in shops if str(s.get('Dist_ID', '')).strip() == str(dist_id).strip()]
+    
+    if not dist_shops:
+        await query.edit_message_text("❌ Do'konlar topilmadi!")
+        return
+    
+    msg = f"🏪 Do'konlar ro'yxati\n\n"
+    msg += f"Distribyutor: {dist_shops[0].get('Dist_Name', '')}\n"
+    msg += f"Jami: {len(dist_shops)} ta\n\n"
+    
+    for idx, shop in enumerate(dist_shops, 1):
+        msg += f"{idx}. {shop.get('Nomi', '')}\n"
+        msg += f"   📍 {shop.get('Adres', '')}\n"
+        msg += f"   📞 {shop.get('Tel1', '')}\n"
+        msg += f"   👤 {shop.get('Sotuvchi', '')}\n\n"
+    
+    btns = [[InlineKeyboardButton("🔙 Orqaga", callback_data="adm_all_shops")]]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+
     await query.edit_message_text("👨‍💼 Admin Panel", reply_markup=InlineKeyboardMarkup(btns))
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN - ADD PRODUCT
+# ═══════════════════════════════════════════════════════════
+
+async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start adding new product"""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("➕ Mahsulot qo'shish\n\nMahsulot nomini kiriting:")
+    return S_ADM_ADD_NAME
+
+async def admin_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Product name entered"""
+    context.user_data['adm_name'] = update.message.text
+    await update.message.reply_text("Turini kiriting:\n\n(Masalan: 1kg, 500g, 250g)\nYoki '-' (turi yo'q bo'lsa)")
+    return S_ADM_ADD_TURI
+
+async def admin_add_turi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Product type entered"""
+    turi = update.message.text.strip()
+    context.user_data['adm_turi'] = turi if turi != '-' else '-'
+    await update.message.reply_text("Birligini kiriting:\n\n(Masalan: kg, dona, litr)")
+    return S_ADM_ADD_BIRLIK
+
+async def admin_add_birlik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Product unit entered"""
+    context.user_data['adm_birlik'] = update.message.text
+    await update.message.reply_text("Zavod narxini kiriting (so'm):")
+    return S_ADM_ADD_ZAVOD
+
+async def admin_add_zavod(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Factory price entered"""
+    try:
+        zavod = int(update.message.text.replace(',', ''))
+        if zavod <= 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("❌ Noto'g'ri! Musbat raqam kiriting:")
+        return S_ADM_ADD_ZAVOD
+    
+    context.user_data['adm_zavod'] = zavod
+    await update.message.reply_text("Tavsiya etilgan sotish narxini kiriting (so'm):")
+    return S_ADM_ADD_SOTISH
+
+async def admin_add_sotish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Suggested selling price entered - save product"""
+    try:
+        sotish = int(update.message.text.replace(',', ''))
+        if sotish <= 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("❌ Noto'g'ri! Musbat raqam kiriting:")
+        return S_ADM_ADD_SOTISH
+    
+    zavod = context.user_data.get('adm_zavod', 0)
+    
+    if sotish < zavod:
+        await update.message.reply_text(
+            f"❌ Sotish narxi zavod narxidan kam!\n\n"
+            f"Zavod: {format_number(zavod)}\n\n"
+            f"Sotish narxini qaytadan kiriting:"
+        )
+        return S_ADM_ADD_SOTISH
+    
+    # Generate product ID
+    prod_id = generate_id("mhs")
+    name = context.user_data.get('adm_name', '')
+    turi = context.user_data.get('adm_turi', '-')
+    birlik = context.user_data.get('adm_birlik', '')
+    sana = date.today().strftime("%Y-%m-%d")
+    
+    # Save to Mahsulotlar_Asosiy
+    row = [prod_id, name, turi, birlik, zavod, sotish, 'active', sana]
+    
+    if db_add("Mahsulotlar_Asosiy", row):
+        lbl = f"{name}" if turi == '-' else f"{name} {turi}"
+        
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        
+        await update.message.reply_text(
+            f"✅ Mahsulot qo'shildi!\n\n"
+            f"📦 {lbl}\n"
+            f"💰 Zavod: {format_number(zavod)} so'm\n"
+            f"💵 Sotish: {format_number(sotish)} so'm",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+    else:
+        await update.message.reply_text("❌ Xatolik yuz berdi!")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN - CHANGE FACTORY PRICE
+# ═══════════════════════════════════════════════════════════
+
+async def admin_zavod_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start changing factory price"""
+    query = update.callback_query
+    await query.answer()
+    
+    prods = db_get_all("Mahsulotlar_Asosiy")
+    active = [p for p in prods if str(p.get('Status', '')).lower() == 'active']
+    
+    if not active:
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        await query.edit_message_text("❌ Mahsulotlar yo'q!", reply_markup=InlineKeyboardMarkup(btns))
+        return ConversationHandler.END
+    
+    btn_list = []
+    for p in active:
+        name = p.get('Nomi')
+        turi = p.get('Turi', '-')
+        zavod = format_number(p.get('Zavod_Narxi', 0))
+        lbl = f"{name}" if turi == '-' else f"{name} {turi}"
+        lbl += f" ({zavod})"
+        btn_list.append(InlineKeyboardButton(lbl, callback_data=f"admz_{p.get('ID')}"))
+    
+    btns = []
+    for i in range(0, len(btn_list), 2):
+        if i+1 < len(btn_list):
+            btns.append([btn_list[i], btn_list[i+1]])
+        else:
+            btns.append([btn_list[i]])
+    btns.append([InlineKeyboardButton("❌ Bekor", callback_data="adm_cancel")])
+    
+    await query.edit_message_text(
+        "💰 Zavod narxini o'zgartirish\n\n"
+        "Mahsulotni tanlang:",
+        reply_markup=InlineKeyboardMarkup(btns)
+    )
+    return S_ADM_CHG_ZAVOD_PROD
+
+async def admin_zavod_prod_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Product selected for factory price change"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "adm_cancel":
+        await query.edit_message_text("❌ Bekor qilindi")
+        return ConversationHandler.END
+    
+    pid = query.data.replace("admz_", "")
+    prod = get_product_by_id(pid)
+    
+    if not prod:
+        await query.edit_message_text("❌ Mahsulot topilmadi!")
+        return ConversationHandler.END
+    
+    context.user_data['adm_zavod_prod'] = prod
+    
+    name = prod.get('Nomi')
+    turi = prod.get('Turi', '-')
+    zavod = format_number(prod.get('Zavod_Narxi', 0))
+    
+    lbl = f"{name}" if turi == '-' else f"{name} {turi}"
+    
+    await query.edit_message_text(
+        f"Mahsulot: {lbl}\n\n"
+        f"Joriy zavod narxi: {zavod} so'm\n\n"
+        f"Yangi zavod narxini kiriting:"
+    )
+    return S_ADM_CHG_ZAVOD_PRICE
+
+async def admin_zavod_price_enter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """New factory price entered"""
+    try:
+        price = int(update.message.text.replace(',', ''))
+        if price <= 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("❌ Noto'g'ri! Musbat raqam kiriting:")
+        return S_ADM_CHG_ZAVOD_PRICE
+    
+    prod = context.user_data.get('adm_zavod_prod')
+    pid = prod.get('ID')
+    
+    # Update in Mahsulotlar_Asosiy
+    result = db_update_row("Mahsulotlar_Asosiy", {'ID': pid}, {'Zavod_Narxi': price})
+    
+    if result:
+        name = prod.get('Nomi')
+        turi = prod.get('Turi', '-')
+        lbl = f"{name}" if turi == '-' else f"{name} {turi}"
+        
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        
+        await update.message.reply_text(
+            f"✅ Zavod narxi yangilandi!\n\n"
+            f"Mahsulot: {lbl}\n"
+            f"Yangi zavod narxi: {format_number(price)} so'm",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+    else:
+        await update.message.reply_text("❌ Xatolik yuz berdi!")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# ═══════════════════════════════════════════════════════════
+# ADMIN - ALL DISTRIBUTORS REPORT
+# ═══════════════════════════════════════════════════════════
+
+async def admin_report_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show report for all distributors"""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("⏳ Barcha distribyutorlar hisoboti tayyorlanmoqda...")
+    
+    topshirish_data = db_get_all("Topshirish")
+    qabul_data = db_get_all("Qabul")
+    tolov_data = db_get_all("Tolov")
+    
+    # Group by distributor
+    dist_stats = {}
+    
+    for t in topshirish_data:
+        dist_id = str(t.get('Dist_ID', '')).strip()
+        if not dist_id:
+            continue
+        
+        if dist_id not in dist_stats:
+            dist_stats[dist_id] = {
+                'name': '',
+                'sotuv': 0,
+                'naqd': 0,
+                'qarz': 0,
+                'dokonlar': set()
+            }
+        
+        dist_stats[dist_id]['sotuv'] += float(t.get('Topshirish_Miqdor', 0)) * int(t.get('Narx', 0))
+        dist_stats[dist_id]['naqd'] += int(t.get('Naqd', 0))
+        dist_stats[dist_id]['qarz'] += int(t.get('Qarz', 0))
+        dist_stats[dist_id]['dokonlar'].add(t.get('Dokon_ID'))
+    
+    # Get names from Dokonlar
+    shops = db_get_all("Dokonlar")
+    for sid, stats in dist_stats.items():
+        for shop in shops:
+            if str(shop.get('Dist_ID', '')).strip() == sid:
+                stats['name'] = shop.get('Dist_Name', f'Dist_{sid}')
+                break
+    
+    if not dist_stats:
+        btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+        await query.edit_message_text(
+            "📊 Hali ma'lumotlar yo'q",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+    
+    # Build message
+    msg = "📊 Barcha distribyutorlar hisoboti\n\n"
+    
+    total_sotuv = 0
+    total_naqd = 0
+    total_qarz = 0
+    total_dokonlar = 0
+    
+    for dist_id, stats in sorted(dist_stats.items(), key=lambda x: x[1]['sotuv'], reverse=True):
+        name = stats['name'] if stats['name'] else f"ID: {dist_id}"
+        sotuv = int(stats['sotuv'])
+        naqd = int(stats['naqd'])
+        qarz = int(stats['qarz'])
+        dokonlar = len(stats['dokonlar'])
+        
+        msg += f"━━━━━━━━━━━━━━━━\n"
+        msg += f"👤 {name}\n"
+        msg += f"💰 Sotuv: {format_number(sotuv)}\n"
+        msg += f"💵 Naqd: {format_number(naqd)}\n"
+        msg += f"📝 Qarz: {format_number(qarz)}\n"
+        msg += f"🏪 {dokonlar} do'kon\n"
+        
+        total_sotuv += sotuv
+        total_naqd += naqd
+        total_qarz += qarz
+        total_dokonlar += dokonlar
+    
+    msg += f"\n━━━━━━━━━━━━━━━━\n"
+    msg += f"📊 JAMI:\n"
+    msg += f"💰 {format_number(total_sotuv)}\n"
+    msg += f"💵 {format_number(total_naqd)}\n"
+    msg += f"📝 {format_number(total_qarz)}\n"
+    msg += f"🏪 {total_dokonlar} do'kon"
+    
+    btns = [[InlineKeyboardButton("🏠 Menyu", callback_data="menu_main")]]
+    
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
 
 # ═══════════════════════════════════════════════════════════
 # CALLBACK ROUTER
@@ -2134,6 +2883,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await price_default_start(update, context)
     elif data == "price_custom":
         await price_custom_start(update, context)
+    elif data == "adm_distributors":
+        await admin_view_distributors(update, context)
+    elif data == "adm_all_shops":
+        await admin_view_all_shops(update, context)
+    elif data.startswith("admdist_"):
+        await admin_dist_detail(update, context)
+    elif data.startswith("admpass_"):
+        await admin_show_passport(update, context)
+    elif data.startswith("admappr_"):
+        await admin_approve_dist(update, context)
+    elif data.startswith("admrej_"):
+        await admin_reject_dist(update, context)
+    elif data.startswith("admshops_"):
+        await admin_shops_by_dist(update, context)
 
 # ═══════════════════════════════════════════════════════════
 # MAIN
@@ -2229,17 +2992,55 @@ def main():
         fallbacks=[CommandHandler('start', start)],
     )
     
+    # Admin - Add product
+    admin_add_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_add_start, pattern="^adm_add_prod$")],
+        states={
+            S_ADM_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_name)],
+            S_ADM_ADD_TURI: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_turi)],
+            S_ADM_ADD_BIRLIK: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_birlik)],
+            S_ADM_ADD_ZAVOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_zavod)],
+            S_ADM_ADD_SOTISH: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_sotish)],
+        },
+        fallbacks=[CommandHandler('start', start)],
+    )
+    
+    # Admin - Change factory price
+    admin_zavod_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_zavod_start, pattern="^adm_zavod$")],
+        states={
+            S_ADM_CHG_ZAVOD_PROD: [CallbackQueryHandler(admin_zavod_prod_cb)],
+            S_ADM_CHG_ZAVOD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_zavod_price_enter)],
+        },
+        fallbacks=[CommandHandler('start', start)],
+    )
+    
+    # Distributor registration
+    dist_reg_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(dist_register_start, pattern="^dist_register_start$")],
+        states={
+            S_DIST_REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, dist_reg_name)],
+            S_DIST_REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dist_reg_phone)],
+            S_DIST_REG_PASSPORT: [MessageHandler(filters.PHOTO | filters.TEXT, dist_reg_passport)],
+        },
+        fallbacks=[CommandHandler('start', start_with_registration)],
+    )
+    
     # Add handlers
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", start_with_registration))
+    app.add_handler(dist_reg_conv)
     app.add_handler(shop_conv)
     app.add_handler(qabul_conv)
     app.add_handler(order_conv)
     app.add_handler(delivery_conv)
     app.add_handler(price_def_conv)
     app.add_handler(price_cus_conv)
+    app.add_handler(admin_add_conv)
+    app.add_handler(admin_zavod_conv)
     
     # Callback handlers
     app.add_handler(CallbackQueryHandler(generate_report, pattern="^rep_"))
+    app.add_handler(CallbackQueryHandler(admin_report_all, pattern="^adm_report$"))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
     # Start
