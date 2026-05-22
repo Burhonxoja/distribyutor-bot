@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: alba-milk-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python ALBA_COMPLETE_WITH_ADMIN.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_CREDS_JSON
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+    autoDeploy: true

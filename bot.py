@@ -1025,7 +1025,14 @@ async def di_loc(upd,ctx):
     elif not channel_int:
         logger.warning("CHANNEL_ID o'rnatilmagan yoki noto'g'ri")
 
-    db_add("Dokonlar",[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()])
+    row=[str(cnt),name,addr,mchj,tel1,tel2,ega,str(uid),dn,lat,lng,ch_mid,now_s()]
+    print(f"DEBUG: Saving shop data:")
+    print(f"  dokon_id: {cnt}")
+    print(f"  nom: {name}")
+    print(f"  adr: {addr}")
+    print(f"  row: {row}")
+    result = db_add("Dokonlar", row)
+    print(f"DEBUG: db_add result: {result}")
 
     # Adminga
     for adm in ADMIN_IDS:
