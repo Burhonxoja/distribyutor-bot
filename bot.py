@@ -1389,7 +1389,7 @@ async def job_5kun(ctx:ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN: print("BOT_TOKEN yo'q!"); return
     app=Application.builder().token(BOT_TOKEN).build()
-    app.job_queue.run_daily(job_qarz,  time=dtime(9,0))
+    # app.job_queue.run_daily(job_qarz,  time=dtime(9,0))
     app.job_queue.run_daily(job_zakaz, time=dtime(20,0))
     app.job_queue.run_daily(job_5kun,  time=dtime(10,0))
     app.job_queue.run_repeating(job_24h, interval=3600, first=60)
